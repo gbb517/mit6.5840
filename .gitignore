@@ -1,0 +1,16 @@
+.vscode
+*.dSYM
+*.o
+*.so
+*.a
+*/logs/*
+src/rpc/KVRaft
+src/rpc/MapReduce
+data/mr*
+*/bin/*
+*.DS_Store
+objs
+lib
+bin
+logs
+tools/logs.tsv
