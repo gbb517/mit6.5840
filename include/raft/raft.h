@@ -103,6 +103,9 @@ private:
     std::condition_variable startSnapshot_;
     Persister persister_;
 
+    // std::string tmpSnapshotPath_; // 快照临时地址
+    // int snapshotOffset_ = 0;      // 
+
     /*
      * Thrift client is thread-unsafe. Considering efficiency and safety,
      * for each kind of task we arrange a ClientManager.

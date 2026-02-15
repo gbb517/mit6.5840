@@ -3,6 +3,7 @@
 #include <cstdlib>
 #include <dlfcn.h>
 #include <fmt/core.h>
+#include <fmt/format.h>
 #include <fstream>
 #include <iostream>
 #include <random>
@@ -35,12 +36,11 @@ DEFINE_double(exit_possibility, 0, "exit possibility");
 DEFINE_double(delay_possibility, 0, "delay possibility");
 DEFINE_string(map_reduce_func, "", "map reduce dynamic library");
 
-class Worker {
+class Worker
+{
 public:
     Worker(std::shared_ptr<TProtocol> protocol, MapFunc mapf, ReduceFunc reducef)
-        : master_(MasterClient(protocol))
-        , mapf_(mapf)
-        , reducef_(reducef)
+        : master_(MasterClient(protocol)), mapf_(mapf), reducef_(reducef)
     {
     }
 
@@ -49,36 +49,48 @@ public:
         LOG(INFO) << "Try to get id from master.";
         id_ = master_.assignId();
         LOG(INFO) << "Get id " << id_ << " from master.";
-        while (true) {
+        while (true)
+        {
             LOG(INFO) << "Worker " << id_ << " request a task.";
             TaskResponse res;
+            // 向 Master 索要任务
             master_.assignTask(res);
             LOG(INFO) << "Worker " << id_ << " get task: " << res;
 
             simulateFailure();
-            switch (res.type) {
-            case ResponseType::WAIT: {
+            switch (res.type)
+            {
+            case ResponseType::WAIT:
+            {
                 LOG(INFO) << "Worker " << id_ << " sleep for a while.";
                 std::this_thread::sleep_for(std::chrono::seconds(1));
-            } break;
+            }
+            break;
 
-            case ResponseType::COMPLETED: {
+            case ResponseType::COMPLETED:
+            {
                 LOG(INFO) << "Worker " << id_ << " exit.";
                 return;
-            } break;
+            }
+            break;
 
-            case ResponseType::MAP_TASK: {
+            case ResponseType::MAP_TASK:
+            {
                 LOG(INFO) << fmt::format("Worker {} do map task {}.", id_, res.id);
+                // 根据 Master 指派的文件路径 (res.params[0]) 读取源文件内容
                 vector<string> files = doMapTask(res);
                 TaskResult rs;
                 rs.id = res.id;
                 rs.type = res.type;
                 rs.rs_loc = std::move(files);
+                // 完成任务，汇报路径
                 master_.commitTask(rs);
                 LOG(INFO) << fmt::format("Worker {} commit map task {}.", id_, res.id);
-            } break;
+            }
+            break;
 
-            case ResponseType::REDUCE_TASK: {
+            case ResponseType::REDUCE_TASK:
+            {
                 LOG(INFO) << fmt::format("Worker {} do reduce task {}.", id_, res.id);
                 vector<string> files = doReduceTask(res);
                 TaskResult rs;
@@ -87,7 +99,8 @@ public:
                 rs.rs_loc = std::move(files);
                 master_.commitTask(rs);
                 LOG(INFO) << fmt::format("Worker {} commit reduce task {}.", id_, res.id);
-            } break;
+            }
+            break;
 
             default:
                 LOG(FATAL) << "Unexpected state!";
@@ -103,22 +116,27 @@ private:
         std::uniform_int_distribution<> distrib(1, 10000);
         double r1 = distrib(gen) / 10000.0;
         double r2 = distrib(gen) / 10000.0;
-        if (r1 < FLAGS_exit_possibility) {
+        if (r1 < FLAGS_exit_possibility)
+        {
             LOG(INFO) << fmt::format("Worker {} exited due to a fault.", id_);
             exit(0);
         }
 
-        if (r2 < FLAGS_delay_possibility) {
+        if (r2 < FLAGS_delay_possibility)
+        {
             LOG(INFO) << fmt::format("Worker {} delay due to a fault.", id_);
             std::this_thread::sleep_for(TIME_OUT);
         }
     }
 
-    vector<string> doMapTask(TaskResponse& res)
+    // 本地读文件，设置key-val
+    vector<string> doMapTask(TaskResponse &res)
     {
         string content = readFile(res.params[0]);
+        // 自定义map--文件内容转换为一系列键值对
         vector<KeyValue> rs = mapf_(res.params[0], content);
 
+        // N 个临时输出文件（N 等于 Reduce 任务的数量）
         vector<string> files(res.resultNum);
         string prefix = fmt::format("mr-wid{}-tid{}", id_, res.id);
         for (uint i = 0; i < files.size(); i++)
@@ -127,16 +145,19 @@ private:
         return files;
     }
 
-    vector<string> doReduceTask(TaskResponse& res)
+    vector<string> doReduceTask(TaskResponse &res)
     {
-        auto& files = res.params;
+        auto &files = res.params;
 
         vector<KeyValue> keyvals;
         string key, val;
-        for (uint i = 0; i < files.size(); i++) {
+        for (uint i = 0; i < files.size(); i++)
+        {
+            // 读取map传来的文件地址
             std::ifstream ifs(files[i]);
-            while (ifs >> key >> val) {
-                keyvals.push_back({ key, val });
+            while (ifs >> key >> val)
+            {
+                keyvals.push_back({key, val});
             }
         }
         LOG(INFO) << fmt::format("Collect {} kvs from {} files", keyvals.size(), files.size());
@@ -144,60 +165,70 @@ private:
         vector<KeyValue> kvs = reduceKV(keyvals);
         string fileName = "mr-out-" + std::to_string(res.id);
         std::ofstream ofs(fileName);
-        for (auto kv : kvs) {
+        for (auto kv : kvs)
+        {
             ofs << kv.key << '\t' << kv.val << '\n';
         }
 
         LOG(INFO) << fmt::format("The reduce task {} get {} kvs, results are stored in {}", res.id, kvs.size(), fileName);
-        return { fileName };
+        return {fileName};
     }
 
-    vector<KeyValue> reduceKV(vector<KeyValue>& kvs)
+    vector<KeyValue> reduceKV(vector<KeyValue> &kvs)
     {
         if (kvs.empty())
             return {};
-        std::sort(kvs.begin(), kvs.end(), [](const KeyValue& kv1, const KeyValue& kv2) {
-            return kv1.key < kv2.key;
-        });
+        // 对 KV 对按 Key 进行排序。这使得相同的 Key 排列在一起
+        std::sort(kvs.begin(), kvs.end(), [](const KeyValue &kv1, const KeyValue &kv2)
+                  { return kv1.key < kv2.key; });
 
         string preKey = kvs[0].key;
         vector<string> vals;
         vector<KeyValue> ans;
-        for (uint i = 0; i < kvs.size(); i++) {
-            if (preKey != kvs[i].key) {
+        for (uint i = 0; i < kvs.size(); i++)
+        {
+            if (preKey != kvs[i].key)
+            {
                 vector<string> rs = reducef_(preKey, vals);
-                if (!rs.empty()) {
-                    ans.push_back({ preKey, rs[0] });
+                if (!rs.empty())
+                {
+                    ans.push_back({preKey, rs[0]});
                 }
                 vals.clear();
                 preKey = kvs[i].key;
                 vals.push_back(kvs[i].val);
-            } else {
+            }
+            else
+            {
                 vals.push_back(kvs[i].val);
             }
         }
         vector<string> rs = reducef_(preKey, vals);
-        if (!rs.empty()) {
-            ans.push_back({ preKey, rs[0] });
+        if (!rs.empty())
+        {
+            ans.push_back({preKey, rs[0]});
         }
         return ans;
     }
 
-    void divideResultsToFile(vector<KeyValue>& rs, vector<string>& resultFiles)
+    void divideResultsToFile(vector<KeyValue> &rs, vector<string> &resultFiles)
     {
         const uint N = resultFiles.size();
         vector<std::ofstream> files(N);
-        for (uint i = 0; i < N; i++) {
+        for (uint i = 0; i < N; i++)
+        {
             files[i] = std::ofstream(resultFiles[i]);
         }
 
-        for (uint i = 0; i < rs.size(); i++) {
-            int h = std::hash<string> {}(rs[i].key) % N;
+        // 哈希计算将kv放置的那个文件
+        for (uint i = 0; i < rs.size(); i++)
+        {
+            int h = std::hash<string>{}(rs[i].key) % N;
             files[h] << rs[i].key << '\t' << rs[i].val << '\n';
         }
     }
 
-    std::string readFile(string& name)
+    std::string readFile(string &name)
     {
         std::ifstream ifs(name);
         ifs.seekg(0, std::ios::end);
@@ -220,21 +251,23 @@ private:
 std::pair<MapFunc, ReduceFunc> loadFunc()
 {
     LOG(INFO) << "Load MapReduce functions.";
-    void* handle = dlopen(FLAGS_map_reduce_func.c_str(), RTLD_LAZY);
-    if (!handle) {
+    void *handle = dlopen(FLAGS_map_reduce_func.c_str(), RTLD_LAZY);
+    if (!handle)
+    {
         LOG(FATAL) << "Cannot open library: " << dlerror();
     }
 
     MapFunc mapf = (MapFunc)dlsym(handle, "wordCountMapF");
     ReduceFunc reducef = (ReduceFunc)dlsym(handle, "wordCountReduceF");
-    if (mapf == nullptr || reducef == nullptr) {
+    if (mapf == nullptr || reducef == nullptr)
+    {
         dlclose(handle);
         LOG(FATAL) << "cannot load symbol wordCountMapF or wordCountReduceF: " << dlerror();
     }
-    return { mapf, reducef };
+    return {mapf, reducef};
 }
 
-int main(int argc, char** argv)
+int main(int argc, char **argv)
 {
     gflags::ParseCommandLineFlags(&argc, &argv, true);
     google::InitGoogleLogging(argv[0]);
@@ -249,13 +282,16 @@ int main(int argc, char** argv)
     google::FlushLogFiles(google::INFO);
 
     auto funcs = loadFunc();
-    try {
+    try
+    {
         transport->open();
         Worker w(protocol, funcs.first, funcs.second);
         LOG(INFO) << "A worker start working";
         w.run();
         transport->close();
-    } catch (TException& tx) {
+    }
+    catch (TException &tx)
+    {
         LOG(WARNING) << "Warning: " << tx.what();
     }
     google::FlushLogFiles(google::INFO);

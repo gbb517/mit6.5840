@@ -22,6 +22,7 @@ enum ErrorCode {
     ERR_SHARD_STOP,
 }
 
+// 分片状态
 enum ShardStatus {
     SERVERING, PULLING, PUSHING, STOP
 }
@@ -68,7 +69,11 @@ struct AppendEntriesParams {
 struct AppendEntriesResult {
     1: TermId term,
     2: bool success,
-    3: ErrorCode code
+    3: ErrorCode code,
+    // 优化回退参数
+    4: TermId xterm,
+    5: i32 xindex,
+    6: i32 xlen
 }
 
 /*

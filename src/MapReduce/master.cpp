@@ -34,52 +34,53 @@ using time_point = std::chrono::steady_clock::time_point;
 
 constexpr auto TIME_OUT = std::chrono::seconds(5);
 
-enum class TaskState {
+enum class TaskState
+{
     IDLE = 0,
     IN_PROGRESS,
     COMPLETED
 };
 
-struct Task {
+struct Task
+{
     int32_t id;
     TaskState state;
     vector<string> params;
     vector<string> results;
 };
 
-struct TaskProcessStatus {
+struct TaskProcessStatus
+{
     int32_t id;
     time_point startTime;
     time_point lastSeen;
 };
 
-class MasterHandler : virtual public MasterIf {
+class MasterHandler : virtual public MasterIf
+{
 private:
-    enum class MasterState {
+    enum class MasterState
+    {
         MAP_PHASE,
         REDUCE_PHASE,
         COMPLETED_PHASE
     };
 
 public:
-    MasterHandler(vector<string>& files, int reduceNumber)
-        : mapTasks_(vector<Task>(files.size()))
-        , reduceTasks_(vector<Task>(reduceNumber))
-        , state_(MasterState::MAP_PHASE)
-        , completedCnt_(0)
-        , workerId(1)
+    MasterHandler(vector<string> &files, int reduceNumber)
+        : mapTasks_(vector<Task>(files.size())), reduceTasks_(vector<Task>(reduceNumber)), state_(MasterState::MAP_PHASE), completedCnt_(0), workerId(1)
     {
-        for (uint i = 0; i < mapTasks_.size(); i++) {
-            mapTasks_[i] = Task { static_cast<int>(i), TaskState::IDLE };
+        for (uint i = 0; i < mapTasks_.size(); i++)
+        {
+            mapTasks_[i] = Task{static_cast<int>(i), TaskState::IDLE};
             mapTasks_[i].params.push_back(files[i]);
         }
 
         for (uint i = 0; i < mapTasks_.size(); i++)
             idle_.push(i);
 
-        std::thread de([this]() {
-            this->detectTimeoutTask();
-        });
+        std::thread de([this]()
+                       { this->detectTimeoutTask(); });
         de.detach();
 
         LOG(INFO) << "Successfully initialized master, number of idle tasks: " << idle_.size();
@@ -98,14 +99,18 @@ public:
         return tid;
     }
 
-    void assignTask(TaskResponse& _return) override
+    // 分配任务给 线程
+    void assignTask(TaskResponse &_return) override
     {
         std::lock_guard<std::mutex> guard(lock_);
         int tid = tryToGetIdleTask();
         _return.id = tid;
         if (tid != -1)
+            // 更新状态
             setTaskToInProgress(tid);
-        switch (state_) {
+        switch (state_)
+        {
+        // 有空闲任务，返回对应文件参数
         case MasterState::MAP_PHASE:
             _return.type = (tid == -1 ? ResponseType::WAIT : ResponseType::MAP_TASK);
             if (tid != -1)
@@ -118,6 +123,7 @@ public:
                 _return.params = reduceTasks_[tid].params;
             _return.resultNum = 1;
             break;
+        // 处于COMPLETED_PHASE，通知 Worker 退出。
         case MasterState::COMPLETED_PHASE:
             _return.type = ResponseType::COMPLETED;
             break;
@@ -128,54 +134,64 @@ public:
         LOG(INFO) << "Assign task: " << _return;
     }
 
-    void commitTask(const TaskResult& result) override
+    void commitTask(const TaskResult &result) override
     {
         std::lock_guard<std::mutex> guard(lock_);
         LOG(INFO) << "Receive task result: " << result;
 
         /*
-         * The worker's result may be delayed for a very long time, which is completely
-         * meaningless if the Master's state has changed.
+         * Worker 提交的任务类型必须与当前 Master 的阶段匹配
+         *（防止过期的 Map 结果在 Reduce 阶段提交）
          */
-        if (!(state_ == MasterState::MAP_PHASE && result.type == ResponseType::MAP_TASK)
-            && !(state_ == MasterState::REDUCE_PHASE && result.type == ResponseType::REDUCE_TASK)) {
+        if (!(state_ == MasterState::MAP_PHASE && result.type == ResponseType::MAP_TASK) && !(state_ == MasterState::REDUCE_PHASE && result.type == ResponseType::REDUCE_TASK))
+        {
             removeFiles(result.rs_loc);
             LOG(INFO) << "Task result expired, ignore this result.";
             return;
         }
 
-        auto& tasks = (state_ == MasterState::MAP_PHASE ? mapTasks_ : reduceTasks_);
+        auto &tasks = (state_ == MasterState::MAP_PHASE ? mapTasks_ : reduceTasks_);
         /*
          * This task may have been previously committed by another woker,
          * so there is no need to commit task again.
          */
         int32_t id = result.id;
-        if (tasks[id].state == TaskState::COMPLETED) {
+        if (tasks[id].state == TaskState::COMPLETED)
+        {
             removeFiles(result.rs_loc);
             LOG(INFO) << "Task has been committed, ignore this result.";
             return;
         }
+        // 更新任务进度，完成计数器
         tasks[id].state = TaskState::COMPLETED;
         inProgress_.erase(id);
 
-        switch (state_) {
-        case MasterState::MAP_PHASE: {
+        // 阶段流转
+        switch (state_)
+        {
+        case MasterState::MAP_PHASE:
+        {
             commitMapTask(result);
             completedCnt_++;
             LOG(INFO) << fmt::format("Finished tasks: {}, Total map tasks: {}", completedCnt_, mapTasks_.size());
-            if (completedCnt_ == mapTasks_.size()) {
+            if (completedCnt_ == mapTasks_.size())
+            {
                 switchToReduceState();
             }
-        } break;
+        }
+        break;
 
-        case MasterState::REDUCE_PHASE: {
+        case MasterState::REDUCE_PHASE:
+        {
             commitReduceTask(result);
             completedCnt_++;
             LOG(INFO) << fmt::format("Finished tasks: {}, Total reduce tasks: {}", completedCnt_, mapTasks_.size());
-            if (completedCnt_ == reduceTasks_.size()) {
+            if (completedCnt_ == reduceTasks_.size())
+            {
                 switchToCompletedState();
             }
-        } break;
+        }
+        break;
 
         default:
             LOG(FATAL) << "Unexpected state";
@@ -183,15 +199,17 @@ public:
     }
 
 private:
-    void commitMapTask(const TaskResult& result)
+    void commitMapTask(const TaskResult &result)
     {
         auto id = result.id;
-        auto& rs_loc = result.rs_loc;
+        auto &rs_loc = result.rs_loc;
 
         vector<string> commit_files(rs_loc.size());
-        for (uint i = 0; i < rs_loc.size(); i++) {
-            auto& name = rs_loc[i];
+        for (uint i = 0; i < rs_loc.size(); i++)
+        {
+            auto &name = rs_loc[i];
             // file name format: mr.mapTaskId.reduceTaskId
+            // 重命名文件--简单的原子提交
             string newName = fmt::format("mr.mid{}.rid{}", id, i);
             std::rename(name.c_str(), newName.c_str());
             commit_files[i] = std::move(newName);
@@ -201,14 +219,15 @@ private:
         LOG(INFO) << fmt::format("Commit map task {}, before commit: {}, after commit: {}", id, rs_loc, mapTasks_[id].results);
     }
 
-    void commitReduceTask(const TaskResult& result)
+    void commitReduceTask(const TaskResult &result)
     {
         auto id = result.id;
-        auto& rs_loc = result.rs_loc;
+        auto &rs_loc = result.rs_loc;
 
         if (rs_loc.size() != 1)
             LOG(FATAL) << "Reduce task " << id << " return multiple results";
 
+        // 重命名文件
         string newName = "mr-out-" + std::to_string(id);
         std::rename(rs_loc[0].c_str(), newName.c_str());
         reduceTasks_[id].results.push_back(std::move(newName));
@@ -218,14 +237,16 @@ private:
 
     void clearIntermediateFiles()
     {
-        for (Task& t : mapTasks_) {
+        for (Task &t : mapTasks_)
+        {
             removeFiles(t.results);
         }
     }
 
     void removeFiles(vector<string> files)
     {
-        for (auto& file : files) {
+        for (auto &file : files)
+        {
             std::remove(file.c_str());
         }
     }
@@ -235,7 +256,9 @@ private:
         LOG(INFO) << fmt::format("Finished {} reduce tasks, switch to COMPLETED_PHASE state.", completedCnt_);
 
         state_ = MasterState::COMPLETED_PHASE;
+        // 删除 map产生的临时文件
         clearIntermediateFiles();
+        // 延时停止 Thrift Server，结束程序
         std::thread fin(exitServer_);
         fin.detach();
     }
@@ -245,19 +268,24 @@ private:
         LOG(INFO) << fmt::format("Finished {} map tasks, switch to REDUCE_PHASE state.", completedCnt_);
         completedCnt_ = 0;
         state_ = MasterState::REDUCE_PHASE;
-        for (uint i = 0; i < reduceTasks_.size(); i++) {
-            auto& task = reduceTasks_[i];
+        for (uint i = 0; i < reduceTasks_.size(); i++)
+        {
+            // 构造任务参数
+            auto &task = reduceTasks_[i];
             task.id = i;
             task.state = TaskState::IDLE;
+            // 分散为n个桶
             task.params.reserve(mapTasks_.size());
 
-            auto& params = task.params;
-            for (uint j = 0; j < mapTasks_.size(); j++) {
+            auto &params = task.params;
+            for (uint j = 0; j < mapTasks_.size(); j++)
+            {
                 params.push_back(mapTasks_[j].results[i]);
             }
         }
 
-        for (uint i = 0; i < reduceTasks_.size(); i++) {
+        for (uint i = 0; i < reduceTasks_.size(); i++)
+        {
             idle_.push(i);
         }
     }
@@ -265,10 +293,13 @@ private:
     int32_t tryToGetIdleTask()
     {
         LOG(INFO) << "Before get an idle task, idle task number: " << idle_.size();
-        auto& tasks = (state_ == MasterState::MAP_PHASE ? mapTasks_ : reduceTasks_);
+        auto &tasks = (state_ == MasterState::MAP_PHASE ? mapTasks_ : reduceTasks_);
 
         int32_t tid = -1;
-        while (!idle_.empty()) {
+        // 如果取出的任务状态已经不是 IDLE（可能被超时机制重置过又刚好被别的 Worker 提交完成了），
+        // 则跳过，继续取下一个
+        while (!idle_.empty())
+        {
             tid = idle_.front();
             idle_.pop();
 
@@ -277,16 +308,19 @@ private:
              * is added to the idle queue and waits for a new woker to process it. However, if the result is committed
              * before a new worker arrives, then it is no longer necessary to schedule a new worker to handle the task.
              */
-            if (tasks[tid].state != TaskState::IDLE) {
+            if (tasks[tid].state != TaskState::IDLE)
+            {
                 LOG(INFO) << fmt::format("Task {} has been handled, skip it.", tid);
                 continue;
-            } else {
+            }
+            else
+            {
                 break; // find an idle task
             }
         }
         LOG(INFO) << fmt::format("Get {} task {}, idle task number: {}",
-            (state_ == MasterState::MAP_PHASE ? "map" : "reduce"),
-            tid, idle_.size());
+                                 (state_ == MasterState::MAP_PHASE ? "map" : "reduce"),
+                                 tid, idle_.size());
 
         return tid;
     }
@@ -294,39 +328,49 @@ private:
     void setTaskToInProgress(int id)
     {
         auto cur = std::chrono::steady_clock::now();
-        inProgress_[id] = { id, cur, cur };
-        if (state_ == MasterState::MAP_PHASE) {
+        inProgress_[id] = {id, cur, cur};
+        if (state_ == MasterState::MAP_PHASE)
+        {
             mapTasks_[id].state = TaskState::IN_PROGRESS;
-        } else {
+        }
+        else
+        {
             reduceTasks_[id].state = TaskState::IN_PROGRESS;
         }
         LOG(INFO) << fmt::format("set {} task {} to in-progress, idle task number: {}",
-            (state_ == MasterState::MAP_PHASE ? "map" : "reduce"),
-            id, idle_.size());
+                                 (state_ == MasterState::MAP_PHASE ? "map" : "reduce"),
+                                 id, idle_.size());
     }
 
     void detectTimeoutTask()
     {
-        while (true) {
+        while (true)
+        {
             std::this_thread::sleep_for(TIME_OUT / 2);
             {
                 std::lock_guard<mutex> guard(lock_);
                 LOG(INFO) << "start to detect timeout tasks.";
                 auto cur = std::chrono::steady_clock::now();
-                for (auto it = inProgress_.begin(); it != inProgress_.end();) {
+                for (auto it = inProgress_.begin(); it != inProgress_.end();)
+                {
                     auto startTime = it->second.startTime;
-                    /*
+                    /* 超时判断
                      * For various reasons, the worker may delay or interrupt execution,
                      * at which point the master node will assign the task to other worker
                      */
-                    if (cur - startTime > TIME_OUT) {
+
+                    if (cur - startTime > TIME_OUT)
+                    {
                         auto id = it->first;
                         LOG(INFO) << fmt::format("Task {} time out, reset it's state to IDLE.", id);
-                        auto& tasks = (state_ == MasterState::MAP_PHASE ? mapTasks_ : reduceTasks_);
+                        auto &tasks = (state_ == MasterState::MAP_PHASE ? mapTasks_ : reduceTasks_);
                         idle_.push(id);
+                        // 撤回任务
                         tasks[id].state = TaskState::IDLE;
                         it = inProgress_.erase(it);
-                    } else {
+                    }
+                    else
+                    {
                         it++;
                     }
                 }
@@ -347,12 +391,13 @@ private:
     std::function<void(void)> exitServer_;
 };
 
-int main(int argc, char** argv)
+int main(int argc, char **argv)
 {
     FLAGS_log_dir = "../logs/master";
     google::InitGoogleLogging(argv[0]);
 
-    if (argc < 2) {
+    if (argc < 2)
+    {
         std::cout << "Usage: ./master file1 file2 ..." << std::endl;
         exit(-1);
     }
@@ -360,7 +405,8 @@ int main(int argc, char** argv)
     LOG(INFO) << "INPUT ARGS: " << argc;
 
     vector<string> files(argc - 1);
-    for (int i = 1; i < argc; i++) {
+    for (int i = 1; i < argc; i++)
+    {
         files[i - 1] = string(argv[i]);
         LOG(INFO) << i << "-th input file: " << files[i - 1];
     }
@@ -375,12 +421,12 @@ int main(int argc, char** argv)
 
     TThreadedServer server(processor, serverTransport, transportFactory, protocolFactory);
 
-    handler->setExitServer([&server]() {
+    handler->setExitServer([&server]()
+                           {
         std::this_thread::sleep_for(std::chrono::seconds(1));
         LOG(INFO) << "The master node has finished its work and now exits!";
         google::FlushLogFiles(google::INFO);
-        server.stop();
-    });
+        server.stop(); });
 
     LOG(INFO) << "start master!";
     server.serve();
