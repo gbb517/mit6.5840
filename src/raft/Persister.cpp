@@ -19,21 +19,15 @@
 #include <tools/Timer.hpp>
 #include <tools/ToString.hpp>
 
-static std::ostream& operator<<(std::ostream& out, std::deque<LogEntry>& logs);
-static std::ostream& operator<<(std::ostream& ost, const Metadata& md);
-static std::istream& operator>>(std::istream& ist, Metadata& md);
+static std::ostream &operator<<(std::ostream &out, std::deque<LogEntry> &logs);
+static std::ostream &operator<<(std::ostream &ost, const Metadata &md);
+static std::istream &operator>>(std::istream &ist, Metadata &md);
 
 Persister::Persister(std::string dirPath)
-    : metaFilePath_(dirPath + "/meta.dat")
-    , logChunkDir_(dirPath + "/logChunks")
-    , snapshotDir_(dirPath + "/snapshots")
-    , md_({ 0, NULL_HOST })
-    , lastIncludeIndex_(0)
-    , lastIncludeTerm_(0)
-    , estimateLogBufSize_(0)
-    , lastInBufLogId_(-1)
+    : metaFilePath_(dirPath + "/meta.dat"), logChunkDir_(dirPath + "/logChunks"), snapshotDir_(dirPath + "/snapshots"), md_({0, NULL_HOST}), lastIncludeIndex_(0), lastIncludeTerm_(0), estimateLogBufSize_(0), lastInBufLogId_(-1)
 {
-    if (access(metaFilePath_.c_str(), F_OK) == 0) {
+    if (access(metaFilePath_.c_str(), F_OK) == 0)
+    {
         std::ifstream ifs(metaFilePath_);
         if (!ifs.good())
             LOG(WARNING) << "Meta file is not good: " << metaFilePath_;
@@ -48,8 +42,9 @@ Persister::~Persister()
     flushLogBuf();
 }
 
-void Persister::saveTermAndVote(TermId term, Host& voteFor)
+void Persister::saveTermAndVote(TermId term, Host &voteFor)
 {
+    // 持久化 Term 和 VoteFor
     Timer t("Start save meta data!", "Finish save meta data");
     md_.term = term;
     md_.voteFor = voteFor;
@@ -57,20 +52,54 @@ void Persister::saveTermAndVote(TermId term, Host& voteFor)
     std::string tmp = metaFilePath_ + ".tmp";
     std::ofstream ofs(tmp, std::ios::trunc);
     ofs << md_;
-    if (rename(tmp.c_str(), metaFilePath_.c_str())) {
+    if (rename(tmp.c_str(), metaFilePath_.c_str()))
+    {
         LOG(FATAL) << fmt::format("rename file{} failed: {}", tmp, strerror(errno));
     }
 }
 
-void Persister::saveLogs(LogId commitIndex, std::deque<LogEntry>& logs)
+void Persister::saveLogs(LogId commitIndex, std::deque<LogEntry> &logs)
 {
+    // 如果 logs 为空，或者 commitIndex 小于当前已保存的日志，说明可能发生了 truncate 或 snapshot
+    // 我们只需更新 lastInBufLogId_ 避免下次从错误位置开始
+    if (logs.empty())
+    {
+        // 更新 lastInBufLogId_，确保跟上 commitIndex 进度
+        if (commitIndex > lastInBufLogId_)
+            lastInBufLogId_ = commitIndex;
+        return;
+    }
+
+    // 获取当前内存中日志的起始索引
+    LogId logStartIndex = logs.front().index;
+
+    // 如果 buffer 指针落后于日志起始位置（中间有日志被快照截断了）
+    // 强制追赶上来，跳过那些已经不在内存中的日志
+    if (lastInBufLogId_ < logStartIndex - 1)
+    {
+        lastInBufLogId_ = logStartIndex - 1;
+    }
+
     LOG(INFO) << fmt::format("Logs need to save: ({}, {}), total logs: {}",
-        lastInBufLogId_ + 1, commitIndex, logsRange(logs));
-    for (LogId i = lastInBufLogId_ + 1; i <= commitIndex; i++) {
-        int pos = i - logs.front().index;
-        LogEntry& log = logs[pos];
+                             lastInBufLogId_ + 1, commitIndex, logsRange(logs));
+
+    // 此时 lastInBufLogId_ + 1 应该 >= logStartIndex
+    for (LogId i = lastInBufLogId_ + 1; i <= commitIndex; i++)
+    {
+        // 安全计算偏移量
+        int pos = i - logStartIndex;
+
+        // 防御性检查：防止越界
+        if (pos < 0 || pos >= static_cast<int>(logs.size()))
+        {
+            // 正常情况下进不到这里，除非 commitIndex 超出了 logs 范围
+            break;
+        }
+
+        LogEntry &log = logs[pos];
         uint es = estmateSize(log);
-        if (estimateLogBufSize_ + es > LOG_CHUNK_BYTES) {
+        if (estimateLogBufSize_ + es > LOG_CHUNK_BYTES)
+        {
             flushLogBuf();
         }
         logBuf_.push_back(log);
@@ -79,37 +108,73 @@ void Persister::saveLogs(LogId commitIndex, std::deque<LogEntry>& logs)
     }
 }
 
-void Persister::loadRaftState(TermId& term, Host& votedFor, std::deque<LogEntry>& logs, TermId& lastIncTerm, LogId& lastIncIndex)
+void Persister::loadRaftState(TermId &term, Host &votedFor, std::deque<LogEntry> &logs, TermId &lastIncTerm, LogId &lastIncIndex)
 {
     term = md_.term;
     votedFor = md_.voteFor;
     logs.clear();
-    for (auto& chunk : chunkNames_) {
-        auto path = logChunkDir_ + "/" + chunk;
-        std::ifstream ifs(path);
-        LogId chunkStart, chunkEnd;
-        ifs >> chunkStart >> chunkEnd;
-        LOG(INFO) << fmt::format("Start read logs [{}, {}] from chunk file {}", chunkStart, chunkEnd, path);
-        char newLine;
-        LogEntry log;
-        while (ifs >> log.term >> log.index) {
-            ifs.get(newLine);
-            std::getline(ifs, log.command);
-            logs.push_back(std::move(log));
-        }
-        LOG(INFO) << fmt::format("After read, logs {} in the memory.", logsRange(logs));
-    }
 
+    // 1. 先加载快照信息，以确定日志的起始索引 lastIncludeIndex_
+    // 这是为了过滤掉磁盘中残留的、已经被快照覆盖的旧日志
     auto ss = getLatestSnapshotPath();
-    if (ss != "") {
+    if (ss != "")
+    {
+        // applySnapshot 会更新 lastIncludeTerm_ 和 lastIncludeIndex_
         applySnapshot(ss);
     }
     lastIncTerm = lastIncludeTerm_;
     lastIncIndex = lastIncludeIndex_;
 
+    // 2. 使用 map 暂存日志，利用 map 的 key 有序且唯一的特性
+    // 自动处理日志乱序和重复问题（旧日志会被新日志覆盖，或者被排序）
+    std::map<LogId, LogEntry> logMap;
+
+    for (auto &chunk : chunkNames_)
+    {
+        auto path = logChunkDir_ + "/" + chunk;
+        std::ifstream ifs(path);
+        LogId chunkStart, chunkEnd;
+        ifs >> chunkStart >> chunkEnd;
+
+        // 优化：如果整个文件都小于等于快照索引，则完全跳过
+        if (chunkEnd <= lastIncIndex && lastIncIndex > 0)
+        {
+            continue;
+        }
+
+        LOG(INFO) << fmt::format("Start read logs [{}, {}] from chunk file {}", chunkStart, chunkEnd, path);
+        char newLine;
+        LogEntry log;
+        while (ifs >> log.term >> log.index)
+        {
+            ifs.get(newLine);
+            std::getline(ifs, log.command);
+
+            // 关键逻辑：过滤掉已经被快照包含的旧日志
+            if (log.index <= lastIncIndex)
+            {
+                continue;
+            }
+
+            // 将日志存入 map，如果存在相同 index 的日志，
+            // 这里假设 chunkNames_ 是按时间生成的，后读取的会覆盖先读取的（如果 map 中已存在）
+            // 或者仅仅是插入去重。
+            logMap[log.index] = std::move(log);
+        }
+    }
+
+    // 3. 将整理好且去重后的日志转入 deque
+    for (auto &kv : logMap)
+    {
+        logs.push_back(std::move(kv.second));
+    }
+
+    LOG(INFO) << fmt::format("After read and sort, logs {} in the memory.", logsRange(logs));
+
     lastInBufLogId_ = (logs.empty() ? lastIncIndex : logs.back().index);
 
-    if (!checkState(term, votedFor, logs)) {
+    if (!checkState(term, votedFor, logs))
+    {
         term = 0;
         votedFor = NULL_HOST;
         logs.clear();
@@ -125,7 +190,8 @@ void Persister::flushLogBuf()
             return;
         std::ofstream ofs(tmpName, std::ios::out | std::ios::trunc);
         ofs << logBuf_.front().index << ' ' << logBuf_.back().index << '\n';
-        for (auto& log : logBuf_) {
+        for (auto &log : logBuf_)
+        {
             ofs << log.term << ' ' << log.index << '\n';
             ofs << log.command << '\n';
         }
@@ -140,20 +206,22 @@ void Persister::flushLogBuf()
     estimateLogBufSize_ = 0;
 }
 
-bool Persister::checkState(TermId& term, Host& voteFor, std::deque<LogEntry>& logs)
+bool Persister::checkState(TermId &term, Host &voteFor, std::deque<LogEntry> &logs)
 {
     LOG_IF(FATAL, term < 0) << "Invalid term: " << term;
-    for (uint i = 1; i < logs.size(); i++) {
-        auto& prevLog = logs[i - 1];
-        auto& curLog = logs[i];
-        if (curLog.index != prevLog.index + 1) {
+    for (uint i = 1; i < logs.size(); i++)
+    {
+        auto &prevLog = logs[i - 1];
+        auto &curLog = logs[i];
+        if (curLog.index != prevLog.index + 1)
+        {
             LOG(FATAL) << "Invalid log sequence: {}" << logs;
         }
     }
     return true;
 }
 
-uint Persister::estmateSize(LogEntry& log)
+uint Persister::estmateSize(LogEntry &log)
 {
     uint size = std::to_string(log.term).size() + std::to_string(log.index).size();
     size += 3; // 1 spaces and 2 newline
@@ -165,11 +233,15 @@ int Persister::loadChunks()
 {
     auto files = filesIn(logChunkDir_);
     chunkNames_.clear();
-    for (auto file : files) {
-        if (file.rfind("tmp", 0) == 0) {
+    for (auto file : files)
+    {
+        if (file.rfind("tmp", 0) == 0)
+        {
             auto chunkPath = logChunkDir_ + "/" + file;
             LOG(INFO) << "Remove useless file: " << file;
-        } else {
+        }
+        else
+        {
             chunkNames_.push_back(file);
         }
     }
@@ -183,11 +255,14 @@ std::string Persister::getLatestSnapshotPath()
 {
     auto snapshots = filesIn(snapshotDir_);
     std::string lastestSnapshot;
-    for (auto ss : snapshots) {
-        if (ss.rfind("tmp", 0) != std::string::npos) {
+    for (auto ss : snapshots)
+    {
+        if (ss.rfind("tmp", 0) != std::string::npos)
+        {
             continue;
         }
-        if (lastestSnapshot.empty() || lastestSnapshot < ss) {
+        if (lastestSnapshot.empty() || lastestSnapshot < ss)
+        {
             lastestSnapshot = ss;
         }
     }
@@ -212,62 +287,80 @@ void Persister::applySnapshot(std::string snapshotPath)
 {
     std::ifstream ifs(snapshotPath);
 
-    if (!ifs.good()) {
+    if (!ifs.good())
+    {
         LOG(INFO) << "Apply snapshot failed! No snapshot file: " << snapshotPath;
         return;
     }
 
+    // 提取快照对应数据：最后一条日志的任期和索引
     ifs >> lastIncludeTerm_ >> lastIncludeIndex_;
     compactLogs(lastIncludeIndex_);
 }
 
 void Persister::compactLogs(LogId lastIncIndex)
 {
-    while (!chunkNames_.empty()) {
+    // 压缩日志，将 lastIncIndex 之前的压缩成快照
+    while (!chunkNames_.empty())
+    {
         LogId chunkStart, chunkEnd;
         std::string chunk = chunkNames_.front();
         std::ifstream ifs(chunk);
         ifs >> chunkStart >> chunkEnd;
 
-        if (chunkEnd <= lastIncIndex) {
+        if (chunkEnd <= lastIncIndex)
+        {
             unlink(chunk.c_str());
             LOG(INFO) << "Remove chunk file: " << chunk;
             chunkNames_.pop_front();
-        } else {
+        }
+        else
+        {
             break;
         }
     }
 
-    while (!logBuf_.empty()) {
-        if (logBuf_.front().index <= lastIncIndex) {
+    while (!logBuf_.empty())
+    {
+        if (logBuf_.front().index <= lastIncIndex)
+        {
             LOG(INFO) << "Remove log: " << logBuf_.front().index;
             logBuf_.pop_front();
-        } else {
+        }
+        else
+        {
             break;
         }
     }
 }
 
-std::vector<std::string> Persister::filesIn(std::string& dir)
+std::vector<std::string> Persister::filesIn(std::string &dir)
 {
     std::vector<std::string> files;
-    DIR* dirp = opendir(dir.c_str());
-    if (dirp == nullptr) {
-        if (errno == ENOENT) {
+    DIR *dirp = opendir(dir.c_str());
+    if (dirp == nullptr)
+    {
+        if (errno == ENOENT)
+        {
             LOG(INFO) << fmt::format("Open {} failed: {}, create it!", dir, strerror(errno));
-            if (mkdir(dir.c_str(), S_IRWXU)) {
+            if (mkdir(dir.c_str(), S_IRWXU))
+            {
                 LOG(FATAL) << fmt::format("mkdir \"{}\" faild: {}", dir, strerror(errno));
             }
-        } else {
+        }
+        else
+        {
             LOG(FATAL) << fmt::format("Open {} failed: {}", dir, strerror(errno));
         }
         return {};
     }
 
-    dirent* dp;
-    while ((dp = readdir(dirp)) != nullptr) {
+    dirent *dp;
+    while ((dp = readdir(dirp)) != nullptr)
+    {
         std::string name = dp->d_name;
-        if (name == "." || name == ".." || dp->d_type != DT_REG) {
+        if (name == "." || name == ".." || dp->d_type != DT_REG)
+        {
             continue;
         }
         files.push_back(std::move(name));
@@ -276,11 +369,12 @@ std::vector<std::string> Persister::filesIn(std::string& dir)
     return files;
 }
 
-static std::ostream& operator<<(std::ostream& out, std::deque<LogEntry>& logs)
+static std::ostream &operator<<(std::ostream &out, std::deque<LogEntry> &logs)
 {
     out << '[';
-    for (auto log : logs) {
-        const auto& cmd = log.command;
+    for (auto log : logs)
+    {
+        const auto &cmd = log.command;
         out << fmt::format("(term: {}, index: {}, cmd: {})", log.term, log.index, (cmd.size() > 10 ? cmd.substr(0, 10) : cmd));
         out << ',';
     }
@@ -288,21 +382,23 @@ static std::ostream& operator<<(std::ostream& out, std::deque<LogEntry>& logs)
     return out;
 }
 
-static std::ostream& operator<<(std::ostream& ost, const Metadata& md)
+static std::ostream &operator<<(std::ostream &ost, const Metadata &md)
 {
     ost << md.term << '\n';
-    if (md.voteFor == NULL_HOST) {
+    if (md.voteFor == NULL_HOST)
+    {
         ost << "-1" << ' ' << 0 << '\n';
-    } else {
+    }
+    else
+    {
         ost << md.voteFor.ip << ' ' << md.voteFor.port << '\n';
     }
     return ost;
 }
 
-static std::istream& operator>>(std::istream& ist, Metadata& md)
+static std::istream &operator>>(std::istream &ist, Metadata &md)
 {
-    ist >> md.term
-        >> md.voteFor.ip >> md.voteFor.port;
+    ist >> md.term >> md.voteFor.ip >> md.voteFor.port;
 
     if (md.voteFor.ip == "-1")
         md.voteFor = NULL_HOST;

@@ -72,6 +72,7 @@ private:
 
     std::deque<LogEntry> logBuf_;
     uint estimateLogBufSize_;
+    // 上一持久化日志的index
     LogId lastInBufLogId_;
 };
 

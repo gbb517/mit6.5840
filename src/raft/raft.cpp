@@ -201,7 +201,7 @@ void RaftHandler::appendEntries(AppendEntriesResult &_return, const AppendEntrie
     // 如果恰好是快照的最后一条日志，使用快照保存的 Term
     // 只有确信 prevLogIndex > snapshotIndex_ 后，才能安全调用 getLogByLogIndex
     // 5.3 prevLogIndex 合法，但对应位置的 Term 与 Leader 不一致 → 回退日志（(说明之前接收了旧 Leader 的脏数据)）
-    if (params.prevLogTerm != lastLogTerm())
+    if (params.prevLogTerm != preLogTerm)
     {
 
         LOG(INFO) << fmt::format("Expected log term {} at index {}, get {}, delete all logs after it!",
@@ -214,7 +214,7 @@ void RaftHandler::appendEntries(AppendEntriesResult &_return, const AppendEntrie
     }
 
     {
-        // 处理日志冲突（相同索引但 Term 不同 → 删除冲突日志）
+        // 加入新日志内容 nextIndex->
         uint i;
         for (i = 0; i < params.entries.size(); i++)
         {
@@ -222,7 +222,7 @@ void RaftHandler::appendEntries(AppendEntriesResult &_return, const AppendEntrie
             // 新日志索引超过自身最后索引 → 无冲突，跳出循环准备追加
             if (newEntry.index > lastLogIndex())
                 break;
-            // 找到冲突日志（同索引不同 Term）
+            // 找到冲突日志（存在脏数据，prevLogIndex 后同索引不同 Term）
             auto &entry = getLogByLogIndex(newEntry.index);
             if (newEntry.term != entry.term)
             {
@@ -315,6 +315,7 @@ TermId RaftHandler::installSnapshot(const InstallSnapshotParams &params)
 
     lastSeenLeader_ = NOW();
 
+    // leader 的Term 小于 自身Term，拒绝
     if (params.term < currentTerm_)
     {
         LOG(INFO) << fmt::format("Out of fashion installsnapshot from {}, term: {}, currentTerm: {}",
@@ -333,11 +334,13 @@ TermId RaftHandler::installSnapshot(const InstallSnapshotParams &params)
         }
     }
 
+    // 期望顺序到达
     if (offset > params.offset || offset < params.offset)
     {
         return currentTerm_;
     }
 
+    // 第一条数据
     if (offset == 0)
     {
         if (access(tmpSnapshotPath.c_str(), F_OK) == 0)
@@ -348,10 +351,12 @@ TermId RaftHandler::installSnapshot(const InstallSnapshotParams &params)
         tmpSnapshotPath = persister_.getTmpSnapshotPath();
     }
 
+    // 追加数据
     std::ofstream ofs(tmpSnapshotPath, std::ios::app | std::ios::binary);
     ofs.write(params.data.c_str(), params.data.size());
     LOG(INFO) << fmt::format("Write {} bytes into {}", params.data.size(), tmpSnapshotPath);
 
+    // 最后一批数据
     if (params.done)
     {
         persister_.commitSnapshot(tmpSnapshotPath, params.lastIncludedTerm, params.lastIncludedIndex);
@@ -360,6 +365,25 @@ TermId RaftHandler::installSnapshot(const InstallSnapshotParams &params)
                             { stateMachine_->applySnapShot(ssPath); });
         applySs.detach();
         offset = 0;
+        {
+            // 更新状态
+            std::lock_guard<std::mutex> lock_(raftLock_);
+
+            // 快照信息更新
+            snapshotIndex_ = params.lastIncludedIndex;
+            snapshotTerm_ = params.lastIncludedTerm;
+
+            // 推进 commitIndex 和 lastApplied，防止回退
+            commitIndex_ = std::max(commitIndex_, snapshotIndex_);
+            lastApplied_ = std::max(lastApplied_, snapshotIndex_);
+
+            // 压缩日志
+            compactLogs();
+
+            // 持久化数据
+            persister_.saveTermAndVote(currentTerm_, votedFor_);
+            persister_.saveLogs(commitIndex_, logs_);
+        }
     }
 
     return currentTerm_;
@@ -404,6 +428,7 @@ void RaftHandler::updateCommitIndex(LogId newIndex)
         {
             startSnapshot_.notify_one();
         }
+        // 日志持久化
         persister_.saveLogs(commitIndex_, logs_);
     }
 }
@@ -452,20 +477,23 @@ void RaftHandler::handleReplicateResultFor(int peerIndex, LogId prevLogIndex, Lo
         nextIndex_[i] = matchedIndex + 1;
         matchIndex_[i] = matchedIndex;
         /*
-         * Update commitIndex_. This is a typical top k problem, since the size of matchIndex_ is tiny,
-         * to simplify the code, we handle this problem by sorting matchIndex_.
+         * 计算并更新集群的commitIndex（已提交的最大日志索引）
+         * commitIndex需要满足：超过半数节点已复制该日志，且该日志属于当前任期
          */
         auto matchI = matchIndex_;
-        matchI.push_back(lastLogIndex());
+        matchI.push_back(lastLogIndex()); // 加入leader自身的index
         sort(matchI.begin(), matchI.end());
         LogId agreeIndex = matchI[matchI.size() / 2];
+        // 1. 更新的commiteIndex 2. 只能确定提交当前任期内的日志
         if (agreeIndex != commitIndex_ && getLogByLogIndex(agreeIndex).term == currentTerm_)
         {
+            // 通知提交日志
             updateCommitIndex(agreeIndex);
         }
     }
     else
     {
+        // 失败，说明日志发送冲突，回退（未优化，等于就是nextIndex--）
         nextIndex_[i] = std::min(nextIndex_[i], prevLogIndex);
     }
 }
@@ -519,6 +547,7 @@ bool RaftHandler::async_sendLogsTo(int peerIndex, Host host, AppendEntriesParams
         {
             std::lock_guard<std::mutex> guard(raftLock_);
             LogId matchId = params.prevLogIndex + params.entries.size();
+            // 如果发送成功，更新 nextIndex 和 matchIndex
             handleReplicateResultFor(peerIndex, params.prevLogIndex, matchId, rs.success);
         }
 
@@ -793,6 +822,7 @@ void RaftHandler::async_replicateLogTo(int peerIndex, Host host) noexcept
             }
 
             bool success = true;
+            // 落后过多，发送快照
             if (nextIndex + MAX_LOGS_BEFORE_SNAPSHOT < snapshotIndex)
             {
                 success = async_sendSnapshotTo(peerIndex, host);
@@ -886,6 +916,7 @@ void RaftHandler::async_applyMsg() noexcept
                 msg.command = log.command;
                 msg.commandIndex = log.index;
                 msg.commandTerm = log.term;
+                // 作用状态机
                 stateMachine_->apply(msg);
             }
 
