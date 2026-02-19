@@ -65,8 +65,10 @@ RaftHandler::RaftHandler(vector<Host> &peers, Host me, string persisterDir, Stat
     snapshot.detach();
 
     persister_.loadRaftState(currentTerm_, votedFor_, logs_, snapshotIndex_, snapshotTerm_);
-    LOG(INFO) << fmt::format("Load raft state: (term: {}, votedFor_: {}, logs: {}",
-                             currentTerm_, to_string(votedFor_), logsRange(logs_));
+    lastApplied_ = snapshotIndex_;
+    commitIndex_ = snapshotIndex_;
+    LOG(INFO) << fmt::format("Load raft state: (term: {}, votedFor_: {}, logs: {}, snapshotIndex: {}",
+                             currentTerm_, to_string(votedFor_), logsRange(logs_), snapshotIndex_);
 }
 
 RaftHandler::~RaftHandler()
@@ -145,6 +147,9 @@ void RaftHandler::appendEntries(AppendEntriesResult &_return, const AppendEntrie
 
     _return.success = false;
     _return.term = currentTerm_;
+    _return.xterm = -1;
+    _return.xindex = -1;
+    _return.xlen = -1;
 
     if (isExit_)
     {
@@ -180,13 +185,7 @@ void RaftHandler::appendEntries(AppendEntriesResult &_return, const AppendEntrie
     }
     lastSeenLeader_ = NOW();
 
-    // Leader 要求同步的日志的“前置索引”（prevLogIndex）> 自身最后日志索引 → 日志太新，无法匹配，拒绝
-    if (params.prevLogIndex > lastLogIndex())
-    {
-        LOG(INFO) << fmt::format("Expected older logs. prevLogIndex: {}, param.prevLogIndex: {}",
-                                 lastLogIndex(), params.prevLogIndex);
-        return;
-    }
+    /* Lines 188-193 omitted */
 
     // 如果 prevLogIndex 小于当前快照索引，说明该日志已经被压缩，无法通过日志数组校验
     if (params.prevLogIndex < snapshotIndex_)
@@ -194,22 +193,45 @@ void RaftHandler::appendEntries(AppendEntriesResult &_return, const AppendEntrie
         // 对方提到的日志已经被做成快照了，无法校验。
         // 通常返回 false (让 Leader 发送 InstallSnapshot) 或者直接忽略
         LOG(INFO) << fmt::format("Expected snapshot. params.prevLogIndex < snapshotIndex_");
+        _return.xterm = -1;
+        _return.xlen = 0; // or snapshotIndex_ + 1? Usually leader will snapshot.
+        return;
+    }
+
+    // 1. 如果存在 PrevLogIndex > len(rf.log) 说明存在空白位置
+    if (params.prevLogIndex > lastLogIndex())
+    {
+        _return.xterm = -1;
+        _return.xlen = lastLogIndex() + 1;
+        LOG(INFO) << fmt::format("Expected older logs. prevLogIndex: {}, lastLogIndex: {}, return XLen: {}",
+                                 params.prevLogIndex, lastLogIndex(), _return.xlen);
         return;
     }
 
     TermId preLogTerm = params.prevLogIndex == snapshotIndex_ ? snapshotTerm_ : getLogByLogIndex(params.prevLogIndex).term;
     // 如果恰好是快照的最后一条日志，使用快照保存的 Term
     // 只有确信 prevLogIndex > snapshotIndex_ 后，才能安全调用 getLogByLogIndex
-    // 5.3 prevLogIndex 合法，但对应位置的 Term 与 Leader 不一致 → 回退日志（(说明之前接收了旧 Leader 的脏数据)）
+    // 5.3 prevLogIndex 合法，但对应位置的 Term 与 Leader 不一致 → 回退日志
     if (params.prevLogTerm != preLogTerm)
     {
-
         LOG(INFO) << fmt::format("Expected log term {} at index {}, get {}, delete all logs after it!",
-                                 params.prevLogTerm, lastLogIndex(), lastLogTerm());
-        // 删除从 prevLogIndex 开始及之后的所有日志
+                                 params.prevLogTerm, params.prevLogIndex, preLogTerm);
+
+        // 2. 如果存在 rf.log[PrevLogIndex] ≠ PrevLogTerm , 说明有冲突不相同的term
+        _return.xterm = preLogTerm;
+        // 找到该term出现的第一个位置，Xindex = i;
+        // 优化：向前查找属于 preLogTerm 的第一条日志
+        LogId idx = params.prevLogIndex;
+        while (idx > snapshotIndex_ && getLogByLogIndex(idx).term == preLogTerm)
+        {
+            idx--;
+        }
+        _return.xindex = idx + 1; // 第一条是 idx + 1
+
+        // 删除从 prevLogIndex 开始及之后的所有日志 (Standard Raft behavior)
         while (!logs_.empty() && logs_.back().index >= params.prevLogIndex)
             logs_.pop_back();
-        // 返回false，让leader返回更小的prelogidex，因为之前的也可能冲突
+
         return;
     }
 
@@ -469,10 +491,10 @@ AppendEntriesParams RaftHandler::buildAppendEntriesParamsFor(int peerIndex)
     return params;
 }
 
-void RaftHandler::handleReplicateResultFor(int peerIndex, LogId prevLogIndex, LogId matchedIndex, bool success)
+void RaftHandler::handleReplicateResultFor(int peerIndex, LogId prevLogIndex, LogId matchedIndex, const AppendEntriesResult &result)
 {
     int i = peerIndex;
-    if (success)
+    if (result.success)
     {
         nextIndex_[i] = matchedIndex + 1;
         matchIndex_[i] = matchedIndex;
@@ -493,8 +515,55 @@ void RaftHandler::handleReplicateResultFor(int peerIndex, LogId prevLogIndex, Lo
     }
     else
     {
-        // 失败，说明日志发送冲突，回退（未优化，等于就是nextIndex--）
-        nextIndex_[i] = std::min(nextIndex_[i], prevLogIndex);
+        // 失败，使用快速回退策略
+        if (result.xterm == -1)
+        {
+            // Case 1: Follower 日志在 prevLogIndex 处缺失（gap）
+            // 直接回退到 Follower 的日志长度处
+            nextIndex_[i] = result.xlen;
+        }
+        else
+        {
+            // Case 2: 存在 Term 冲突
+            // 查找 Leader 日志中是否存在 result.xterm
+            // 我们需要找到 Leader 中等于 result.xterm 的最后一个日志条目的索引
+
+            bool found = false;
+            LogId lastLogOfXTerm = 0;
+
+            // 倒序查找，因为日志通常是按 Term 递增的
+            for (auto it = logs_.rbegin(); it != logs_.rend(); ++it)
+            {
+                if (it->term == result.xterm)
+                {
+                    found = true;
+                    lastLogOfXTerm = it->index;
+                    break; // 找到了该 Term 的最后一条（因为是倒序）
+                }
+                if (it->term < result.xterm)
+                {
+                    break; // Term 更小了，说明不存在 XTerm
+                }
+            }
+
+            if (found)
+            {
+                // Case 2.1: Leader 也有该冲突 Term 的日志
+                nextIndex_[i] = lastLogOfXTerm + 1;
+            }
+            else
+            {
+                // Case 2.2: Leader 没有该冲突 Term 的日志
+                nextIndex_[i] = result.xindex;
+            }
+        }
+
+        // 确保 nextIndex 有效性 (不小于 matchIndex + 1，通常不应该发生，但防御性编程)
+        nextIndex_[i] = std::max(nextIndex_[i], matchIndex_[i] + 1);
+        if (nextIndex_[i] > lastLogIndex() + 1)
+        {
+            nextIndex_[i] = lastLogIndex() + 1;
+        }
     }
 }
 
@@ -548,7 +617,7 @@ bool RaftHandler::async_sendLogsTo(int peerIndex, Host host, AppendEntriesParams
             std::lock_guard<std::mutex> guard(raftLock_);
             LogId matchId = params.prevLogIndex + params.entries.size();
             // 如果发送成功，更新 nextIndex 和 matchIndex
-            handleReplicateResultFor(peerIndex, params.prevLogIndex, matchId, rs.success);
+            handleReplicateResultFor(peerIndex, params.prevLogIndex, matchId, rs);
         }
 
         bool isHb = params.entries.empty(); // is heart beat;
@@ -613,7 +682,9 @@ bool RaftHandler::async_sendSnapshotTo(int peerIndex, Host host)
     {
         std::lock_guard<std::mutex> guard(raftLock_);
         LogId matchId = params.lastIncludedIndex;
-        handleReplicateResultFor(peerIndex, matchIndex_[peerIndex], matchId, true);
+        AppendEntriesResult rs;
+        rs.success = true;
+        handleReplicateResultFor(peerIndex, matchIndex_[peerIndex], matchId, rs);
     }
     return true;
 }

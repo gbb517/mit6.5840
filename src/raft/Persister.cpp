@@ -257,7 +257,7 @@ std::string Persister::getLatestSnapshotPath()
     std::string lastestSnapshot;
     for (auto ss : snapshots)
     {
-        if (ss.rfind("tmp", 0) != std::string::npos)
+        if (ss.rfind("tmp", 0) == 0) // Starts with tmp
         {
             continue;
         }
@@ -266,7 +266,10 @@ std::string Persister::getLatestSnapshotPath()
             lastestSnapshot = ss;
         }
     }
-    return lastestSnapshot;
+
+    if (lastestSnapshot.empty())
+        return "";
+    return snapshotDir_ + "/" + lastestSnapshot;
 }
 
 std::string Persister::getTmpSnapshotPath()

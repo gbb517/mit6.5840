@@ -6,13 +6,19 @@
 
 #include <rpc/kvraft/KVRaft_types.h>
 
-class KVService {
+// 单个分片的所有 KV 操作逻辑
+class KVService
+{
 public:
     explicit KVService(ShardId sid_);
 
-    PutAppendReply putAppend(const PutAppendParams& params);
+    PutAppendReply putAppend(const PutAppendParams &params);
 
-    GetReply get(const GetParams& params);
+    GetReply get(const GetParams &params);
+
+    std::unordered_map<std::string, std::string> snapshotData() const;
+
+    void loadData(const std::unordered_map<std::string, std::string> &data);
 
 private:
     ShardId sid_;

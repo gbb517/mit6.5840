@@ -8,32 +8,34 @@ KVService::KVService(ShardId sid)
 {
 }
 
-PutAppendReply KVService::putAppend(const PutAppendParams& params)
+PutAppendReply KVService::putAppend(const PutAppendParams &params)
 {
     LOG_IF(FATAL, params.sid != sid_) << fmt::format("Params should be sent to shard {}, current shardId: {}", params.sid, sid_);
     auto key = params.key;
     auto val = params.value;
-    switch (params.op) {
+    switch (params.op)
+    {
     case PutOp::PUT:
         um_[key] = val;
         break;
     case PutOp::APPEND:
-        um_[key] = val;
+        um_[key] += val;
         break;
     default:
         LOG(FATAL) << "Unexpected op type: " << to_string(params.op);
     }
-    
+
     PutAppendReply rep;
     rep.code = ErrorCode::SUCCEED;
     return rep;
 }
 
-GetReply KVService::get(const GetParams& params)
+GetReply KVService::get(const GetParams &params)
 {
     LOG_IF(FATAL, params.sid != sid_) << fmt::format("Params should be sent to shard {}, current shardId: {}", params.sid, sid_);
     GetReply rep;
-    if (um_.find(params.key) == um_.end()) {
+    if (um_.find(params.key) == um_.end())
+    {
         rep.code = ErrorCode::ERR_NO_KEY;
         return rep;
     }
@@ -41,4 +43,14 @@ GetReply KVService::get(const GetParams& params)
     rep.value = um_[params.key];
     rep.code = ErrorCode::SUCCEED;
     return rep;
+}
+
+std::unordered_map<std::string, std::string> KVService::snapshotData() const
+{
+    return um_;
+}
+
+void KVService::loadData(const std::unordered_map<std::string, std::string> &data)
+{
+    um_ = data;
 }

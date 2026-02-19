@@ -96,6 +96,7 @@ private:
     std::vector<Config> configs_;
     std::unique_ptr<RaftHandler> raft_;
     std::mutex lock_;
+    // 分配操作结果集
     std::unordered_map<LogId, std::promise<Reply>> waits_;
     std::unordered_map<GID, std::vector<Host>> groupHosts_;
     LogId lastApplyIndex_;

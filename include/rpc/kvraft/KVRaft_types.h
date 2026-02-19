@@ -1186,8 +1186,10 @@ void swap(QueryReply &a, QueryReply &b);
 std::ostream& operator<<(std::ostream& out, const QueryReply& obj);
 
 typedef struct _PullShardParams__isset {
-  _PullShardParams__isset() : id(false) {}
+  _PullShardParams__isset() : id(false), gid(false), configNum(false) {}
   bool id :1;
+  bool gid :1;
+  bool configNum :1;
 } _PullShardParams__isset;
 
 class PullShardParams : public virtual ::apache::thrift::TBase {
@@ -1199,10 +1201,16 @@ class PullShardParams : public virtual ::apache::thrift::TBase {
 
   virtual ~PullShardParams() noexcept;
   ShardId id;
+  GID gid;
+  int32_t configNum;
 
   _PullShardParams__isset __isset;
 
   void __set_id(const ShardId val);
+
+  void __set_gid(const GID val);
+
+  void __set_configNum(const int32_t val);
 
   bool operator == (const PullShardParams & rhs) const;
   bool operator != (const PullShardParams &rhs) const {
@@ -1222,18 +1230,20 @@ void swap(PullShardParams &a, PullShardParams &b);
 std::ostream& operator<<(std::ostream& out, const PullShardParams& obj);
 
 typedef struct _PullShardReply__isset {
-  _PullShardReply__isset() : code(false) {}
+  _PullShardReply__isset() : kvs(false), code(false) {}
+  bool kvs :1;
   bool code :1;
 } _PullShardReply__isset;
 
 class PullShardReply : public virtual ::apache::thrift::TBase {
  public:
 
-  PullShardReply(const PullShardReply&) noexcept;
-  PullShardReply& operator=(const PullShardReply&) noexcept;
+  PullShardReply(const PullShardReply&);
+  PullShardReply& operator=(const PullShardReply&);
   PullShardReply() noexcept;
 
   virtual ~PullShardReply() noexcept;
+  std::map<std::string, std::string>  kvs;
   /**
    * 
    * @see ErrorCode
@@ -1241,6 +1251,8 @@ class PullShardReply : public virtual ::apache::thrift::TBase {
   ErrorCode::type code;
 
   _PullShardReply__isset __isset;
+
+  void __set_kvs(const std::map<std::string, std::string> & val);
 
   void __set_code(const ErrorCode::type val);
 

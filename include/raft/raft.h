@@ -14,22 +14,24 @@
 #include <tools/ClientManager.hpp>
 #include <tools/ToString.hpp>
 
-
-class RaftHandler : virtual public RaftIf {
+class RaftHandler : virtual public RaftIf
+{
 public:
-    RaftHandler(std::vector<Host>& peers, Host me, std::string persisterDir, StateMachineIf* stateMachine, GID gid = 0);
+    RaftHandler(std::vector<Host> &peers, Host me, std::string persisterDir, StateMachineIf *stateMachine, GID gid = 0);
 
     ~RaftHandler();
 
-    void requestVote(RequestVoteResult& _return, const RequestVoteParams& params) override;
+    void requestVote(RequestVoteResult &_return, const RequestVoteParams &params) override;
 
-    void appendEntries(AppendEntriesResult& _return, const AppendEntriesParams& params) override;
+    void appendEntries(AppendEntriesResult &_return, const AppendEntriesParams &params) override;
 
-    void getState(RaftState& _return) override;
+    void getState(RaftState &_return) override;
 
-    void start(StartResult& _return, const std::string& command) override;
+    void start(StartResult &_return, const std::string &command) override;
 
-    TermId installSnapshot(const InstallSnapshotParams& params) override;
+    TermId installSnapshot(const InstallSnapshotParams &params) override;
+
+    Persister *getPersister() { return &persister_; }
 
 private:
     void switchToFollow();
@@ -40,13 +42,13 @@ private:
 
     void updateCommitIndex(LogId newIndex);
 
-    LogEntry& getLogByLogIndex(LogId logIndex);
+    LogEntry &getLogByLogIndex(LogId logIndex);
 
     AppendEntriesParams buildAppendEntriesParamsFor(int peerIndex);
 
-    void handleReplicateResultFor(int peerIndex, LogId prevLogIndex, LogId matchedIndex, bool success);
+    void handleReplicateResultFor(int peerIndex, LogId prevLogIndex, LogId matchedIndex, const AppendEntriesResult &result);
 
-    int gatherLogsFor(int peerIndex, AppendEntriesParams& params);
+    int gatherLogsFor(int peerIndex, AppendEntriesParams &params);
 
     std::chrono::microseconds getElectionTimeout();
 
@@ -64,7 +66,7 @@ private:
 
     void async_replicateLogTo(int peerIndex, Host host) noexcept;
 
-    bool async_sendLogsTo(int peerIndex, Host host, AppendEntriesParams& params, ClientManager<RaftClient>& cm);
+    bool async_sendLogsTo(int peerIndex, Host host, AppendEntriesParams &params, ClientManager<RaftClient> &cm);
 
     bool async_sendSnapshotTo(int peerIndex, Host host);
 
@@ -104,7 +106,7 @@ private:
     Persister persister_;
 
     // std::string tmpSnapshotPath_; // 快照临时地址
-    // int snapshotOffset_ = 0;      // 
+    // int snapshotOffset_ = 0;      //
 
     /*
      * Thrift client is thread-unsafe. Considering efficiency and safety,
@@ -114,13 +116,13 @@ private:
     ClientManager<RaftClient> cmForRV_; //  client manager for request vote
     ClientManager<RaftClient> cmForAE_; //  client manager for  append entries
 
-    StateMachineIf* stateMachine_;
+    StateMachineIf *stateMachine_;
     LogId snapshotIndex_;
     TermId snapshotTerm_;
 
     GID gid_; // the group id of raft, designed for multiraft
 
-    std::atomic<bool> isExit_;   // When this object is destroyed, it is marked with the variable isExit
+    std::atomic<bool> isExit_; // When this object is destroyed, it is marked with the variable isExit
 };
 
 #endif

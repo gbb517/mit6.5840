@@ -8,30 +8,31 @@
 
 #include <shardkv/ShardCtrler.h>
 
-class CtrlerArgs {
+class CtrlerArgs
+{
 private:
     CtrlerArgs() = default;
 
 public:
-    explicit CtrlerArgs(const JoinArgs& args)
+    explicit CtrlerArgs(const JoinArgs &args)
     {
         op_ = ShardCtrlerOP::JOIN;
         join_ = args;
     }
 
-    explicit CtrlerArgs(const LeaveArgs& args)
+    explicit CtrlerArgs(const LeaveArgs &args)
     {
         op_ = ShardCtrlerOP::LEAVE;
         leave_ = args;
     }
 
-    explicit CtrlerArgs(const MoveArgs& args)
+    explicit CtrlerArgs(const MoveArgs &args)
     {
         op_ = ShardCtrlerOP::MOVE;
         move_ = args;
     }
 
-    explicit CtrlerArgs(const QueryArgs& args)
+    explicit CtrlerArgs(const QueryArgs &args)
     {
         op_ = ShardCtrlerOP::QUERY;
         query_ = args;
@@ -42,63 +43,76 @@ public:
         return op_;
     }
 
-    void copyTo(JoinArgs& args)
+    void copyTo(JoinArgs &args)
     {
         LOG_IF(FATAL, op_ != ShardCtrlerOP::JOIN) << "Expected JOIN, got " << op2str(op_);
         args = join_;
     }
 
-    void copyTo(LeaveArgs& args)
+    void copyTo(LeaveArgs &args)
     {
         LOG_IF(FATAL, op_ != ShardCtrlerOP::LEAVE) << "Expected LEAVE, got " << op2str(op_);
         args = leave_;
     }
 
-    void copyTo(MoveArgs& args)
+    void copyTo(MoveArgs &args)
     {
 
         LOG_IF(FATAL, op_ != ShardCtrlerOP::MOVE) << "Expected MOVE, got " << op2str(op_);
         args = move_;
     }
 
-    void copyTo(QueryArgs& args)
+    void copyTo(QueryArgs &args)
     {
         LOG_IF(FATAL, op_ != ShardCtrlerOP::QUERY) << "Expected QUERY, got " << op2str(op_);
         args = query_;
     }
 
+    // 序列化
     static std::string serialize(const CtrlerArgs args)
     {
         std::ostringstream ss;
 
-        switch (args.op_) {
-        case ShardCtrlerOP::JOIN: {
+        switch (args.op_)
+        {
+        case ShardCtrlerOP::JOIN:
+        {
             ss << op2str(args.op_) << ' ';
-            for (auto it : args.join_.servers) {
-                auto& hosts = it.second;
+            for (auto it : args.join_.servers)
+            {
+                auto &hosts = it.second;
                 ss << it.first << ' ' << hosts.size() << ' ';
-                for (Host& host : hosts) {
+                for (Host &host : hosts)
+                {
                     ss << host.ip << ' ' << host.port << ' ';
                 }
             }
-        } break;
+        }
+        break;
 
-        case ShardCtrlerOP::LEAVE: {
+        case ShardCtrlerOP::LEAVE:
+        {
             ss << op2str(args.op_) << ' ';
-            for (GID gid : args.leave_.gids) {
+            for (GID gid : args.leave_.gids)
+            {
                 ss << gid << ' ';
             }
-        } break;
+        }
+        break;
 
-        case ShardCtrlerOP::MOVE: {
+        case ShardCtrlerOP::MOVE:
+        {
             ss << op2str(args.op_) << ' ';
             ss << args.move_.shard << ' ' << args.move_.gid;
-        } break;
+        }
+        break;
 
-        case ShardCtrlerOP::QUERY: {
+        case ShardCtrlerOP::QUERY:
+        {
             ss << op2str(args.op_) << ' ';
             ss << args.query_.configNum;
-        } break;
+        }
+        break;
 
         default:
             LOG(FATAL) << "Unkown operator";
@@ -106,40 +120,53 @@ public:
         return ss.str();
     }
 
-    static CtrlerArgs deserialize(std::string& cmd)
+    static CtrlerArgs deserialize(std::string &cmd)
     {
         CtrlerArgs args;
         std::istringstream iss(cmd);
         std::string cmdType;
         iss >> cmdType;
         // use rfind to simulate "startswith"
-        if (cmdType.rfind(op2str(ShardCtrlerOP::JOIN), 0) == 0) {
+        if (cmdType.rfind(op2str(ShardCtrlerOP::JOIN), 0) == 0)
+        {
             JoinArgs join;
             GID gid;
             int hostNum;
-            iss >> gid >> hostNum;
-            std::vector<Host> hosts(hostNum);
-            for (int i = 0; i < hostNum; i++) {
-                iss >> hosts[i].ip >> hosts[i].port;
+            while (iss >> gid >> hostNum)
+            {
+                std::vector<Host> hosts(hostNum);
+                for (int i = 0; i < hostNum; i++)
+                {
+                    iss >> hosts[i].ip >> hosts[i].port;
+                }
+                join.servers[gid] = std::move(hosts);
             }
-            join.servers[gid] = std::move(hosts);
             args = CtrlerArgs(join);
-        } else if (cmdType.rfind(op2str(ShardCtrlerOP::LEAVE), 0) == 0) {
+        }
+        else if (cmdType.rfind(op2str(ShardCtrlerOP::LEAVE), 0) == 0)
+        {
             LeaveArgs leave;
             GID gid;
-            while (iss >> gid) {
+            while (iss >> gid)
+            {
                 leave.gids.push_back(gid);
             }
             args = CtrlerArgs(leave);
-        } else if (cmdType.rfind(op2str(ShardCtrlerOP::MOVE), 0) == 0) {
+        }
+        else if (cmdType.rfind(op2str(ShardCtrlerOP::MOVE), 0) == 0)
+        {
             MoveArgs move;
             iss >> move.shard >> move.gid;
             args = CtrlerArgs(move);
-        } else if (cmdType.rfind(op2str(ShardCtrlerOP::QUERY), 0) == 0) {
+        }
+        else if (cmdType.rfind(op2str(ShardCtrlerOP::QUERY), 0) == 0)
+        {
             QueryArgs query;
             iss >> query.configNum;
             args = CtrlerArgs(query);
-        } else {
+        }
+        else
+        {
             LOG(FATAL) << "Unkonw cmd: " << cmd;
         }
         return args;

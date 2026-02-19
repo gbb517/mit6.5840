@@ -186,9 +186,12 @@ struct QueryReply {
 
 struct PullShardParams {
     1: ShardId id;
+    2: GID gid;
+    3: i32 configNum;
 }
 
 struct PullShardReply {
+    1: map<string, string> kvs;
     2: ErrorCode code;
 }
 

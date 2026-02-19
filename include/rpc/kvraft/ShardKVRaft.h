@@ -109,8 +109,8 @@ typedef struct _ShardKVRaft_pullShardParams_result__isset {
 class ShardKVRaft_pullShardParams_result {
  public:
 
-  ShardKVRaft_pullShardParams_result(const ShardKVRaft_pullShardParams_result&) noexcept;
-  ShardKVRaft_pullShardParams_result& operator=(const ShardKVRaft_pullShardParams_result&) noexcept;
+  ShardKVRaft_pullShardParams_result(const ShardKVRaft_pullShardParams_result&);
+  ShardKVRaft_pullShardParams_result& operator=(const ShardKVRaft_pullShardParams_result&);
   ShardKVRaft_pullShardParams_result() noexcept;
 
   virtual ~ShardKVRaft_pullShardParams_result() noexcept;

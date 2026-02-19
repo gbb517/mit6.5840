@@ -12,24 +12,33 @@
 using std::string;
 using std::vector;
 
-KVRaft::KVRaft(vector<Host>& peers, Host me, string persisterDir, std::function<void()> stopListenPort)
-    : raft_(std::make_shared<RaftHandler>(peers, me, persisterDir, this))
-    , stopListenPort_(stopListenPort)
+KVRaft::KVRaft(vector<Host> &peers, Host me, string persisterDir, std::function<void()> stopListenPort)
+    : raft_(std::make_shared<RaftHandler>(peers, me, persisterDir, this)), stopListenPort_(stopListenPort), lastApplyIndex_(0), lastApplyTerm_(0)
 {
+    // 尝试加载最新的快照
+    auto snapshotPath = raft_->getPersister()->getLatestSnapshotPath();
+    if (!snapshotPath.empty())
+    {
+        applySnapShot(snapshotPath);
+        LOG(INFO) << "Loaded initial snapshot from " << snapshotPath;
+    }
 }
 
-void KVRaft::putAppend(PutAppendReply& _return, const PutAppendParams& params)
+void KVRaft::putAppend(PutAppendReply &_return, const PutAppendParams &params)
 {
     StartResult sr;
     string type = (params.op == PutOp::PUT ? "PUT" : "APPEND");
     string command = fmt::format("{} {} {}", type, params.key, params.value);
+    // 返回 leader 标志并记录日志
     raft_->start(sr, command);
 
-    if (!sr.isLeader) {
+    if (!sr.isLeader)
+    {
         _return.code = ErrorCode::ERR_WRONG_LEADER;
         return;
     }
 
+    // 获取该日志的预期索引（Raft 分配的唯一日志索引）
     auto logId = sr.expectedLogIndex;
     std::future<PutAppendReply> f;
 
@@ -39,16 +48,18 @@ void KVRaft::putAppend(PutAppendReply& _return, const PutAppendParams& params)
     }
 
     f.wait();
+    // 获取返回值
     _return = std::move(f.get());
 }
 
-void KVRaft::get(GetReply& _return, const GetParams& params)
+void KVRaft::get(GetReply &_return, const GetParams &params)
 {
     StartResult sr;
     string command = fmt::format("GET {}", params.key);
     raft_->start(sr, command);
 
-    if (!sr.isLeader) {
+    if (!sr.isLeader)
+    {
         _return.code = ErrorCode::ERR_WRONG_LEADER;
         return;
     }
@@ -68,11 +79,12 @@ void KVRaft::get(GetReply& _return, const GetParams& params)
 void KVRaft::apply(ApplyMsg msg)
 {
     LOG(INFO) << "ApplyMsg: " << msg.commandIndex;
-    auto& cmd = msg.command;
+    auto &cmd = msg.command;
     std::istringstream iss(cmd.c_str());
 
     // use rfind to simulate "startswith"
-    if (cmd.rfind("APPEND", 0) == 0 || cmd.rfind("PUT", 0) == 0) {
+    if (cmd.rfind("APPEND", 0) == 0 || cmd.rfind("PUT", 0) == 0)
+    {
         PutAppendParams params;
         string type;
         iss >> type >> params.key >> params.value;
@@ -83,15 +95,21 @@ void KVRaft::apply(ApplyMsg msg)
 
         {
             std::lock_guard<std::mutex> guard(lock_);
-            if (putWait_.find(msg.commandIndex) != putWait_.end()) {
+            // 将结果返回
+            if (putWait_.find(msg.commandIndex) != putWait_.end())
+            {
                 putWait_[msg.commandIndex].set_value(std::move(reply));
                 putWait_.erase(msg.commandIndex);
-            } else {
+            }
+            else
+            {
                 LOG(INFO) << fmt::format("Command {} is not in the putWait_", msg.commandIndex);
             }
         }
         LOG(INFO) << "Apply put command: " << msg.command;
-    } else if (cmd.rfind("GET", 0) == 0) {
+    }
+    else if (cmd.rfind("GET", 0) == 0)
+    {
         GetParams params;
         string type;
         iss >> type >> params.key;
@@ -99,15 +117,20 @@ void KVRaft::apply(ApplyMsg msg)
         get_internal(reply, params);
         {
             std::lock_guard<std::mutex> guard(lock_);
-            if (getWait_.find(msg.commandIndex) != getWait_.end()) {
+            if (getWait_.find(msg.commandIndex) != getWait_.end())
+            {
                 getWait_[msg.commandIndex].set_value(std::move(reply));
                 getWait_.erase(msg.commandIndex);
-            } else {
+            }
+            else
+            {
                 LOG(INFO) << fmt::format("Command {} is not in the getWait_", msg.commandIndex);
             }
         }
         LOG(INFO) << "Apply get command: " << msg.command;
-    } else {
+    }
+    else
+    {
         LOG(ERROR) << fmt::format("Invaid command: {}, commandIndex: {}, commandterm: {}", msg.command, msg.commandIndex, msg.commandTerm);
     }
 
@@ -120,29 +143,21 @@ void KVRaft::apply(ApplyMsg msg)
 
 void KVRaft::startSnapShot(std::string filePath, std::function<void(LogId, TermId)> callback)
 {
+    LogId lastIndex;
+    TermId lastTerm;
     {
-        // stop KV operations when fork
         std::lock_guard<std::mutex> guard(lock_);
+        lastIndex = lastApplyIndex_;
+        lastTerm = lastApplyTerm_;
         std::ofstream ofs(filePath);
-        ofs << lastApplyIndex_ << ' ' << lastApplyTerm_ << '\n';
-        for (auto it : um_) {
+        ofs << lastTerm << ' ' << lastIndex << '\n';
+        for (auto it : um_)
+        {
             ofs << it.first << ' ' << it.second << '\n';
         }
+        ofs.close();
     }
-
-    // if (pid == 0) {
-    //     stopListenPort_();
-    //     std::ofstream ofs(filePath);
-    //     ofs << lastApplyIndex_ << ' ' << lastApplyTerm_ << '\n';
-    //     for (auto it : um_) {
-    //         ofs << it.first << ' ' << it.second << '\n';
-    //     }
-    //     ofs.flush();
-    //     std::exit(0);
-    // } else {
-    //     wait(&pid);
-    //     callback(lastIndex, lastTerm);
-    // }
+    callback(lastIndex, lastTerm);
 }
 
 void KVRaft::applySnapShot(std::string filePath)
@@ -150,16 +165,55 @@ void KVRaft::applySnapShot(std::string filePath)
     std::lock_guard<std::mutex> guard(lock_);
     um_.clear();
     std::ifstream ifs(filePath);
-    ifs >> lastApplyIndex_ >> lastApplyTerm_;
+    if (!ifs.is_open())
+    {
+        LOG(ERROR) << "Failed to open snapshot file: " << filePath;
+        return;
+    }
+
+    ifs >> lastApplyTerm_ >> lastApplyIndex_;
     string key, val;
-    while (ifs >> key >> val) {
+    while (ifs >> key >> val)
+    {
         um_[key] = val;
+    }
+    LOG(INFO) << "Applied snapshot from " << filePath << ", lastIndex: " << lastApplyIndex_ << ", lastTerm: " << lastApplyTerm_;
+
+    // Clear stale waiters
+    for (auto it = putWait_.begin(); it != putWait_.end();)
+    {
+        if (it->first <= lastApplyIndex_)
+        {
+            PutAppendReply reply;
+            reply.code = ErrorCode::ERR_WRONG_LEADER;
+            it->second.set_value(reply);
+            it = putWait_.erase(it);
+        }
+        else
+        {
+            ++it;
+        }
+    }
+    for (auto it = getWait_.begin(); it != getWait_.end();)
+    {
+        if (it->first <= lastApplyIndex_)
+        {
+            GetReply reply;
+            reply.code = ErrorCode::ERR_WRONG_LEADER;
+            it->second.set_value(reply);
+            it = getWait_.erase(it);
+        }
+        else
+        {
+            ++it;
+        }
     }
 }
 
-void KVRaft::putAppend_internal(PutAppendReply& _return, const PutAppendParams& params)
+void KVRaft::putAppend_internal(PutAppendReply &_return, const PutAppendParams &params)
 {
-    switch (params.op) {
+    switch (params.op)
+    {
     case PutOp::PUT:
         um_[params.key] = params.value;
         break;
@@ -175,11 +229,14 @@ void KVRaft::putAppend_internal(PutAppendReply& _return, const PutAppendParams& 
     _return.code = ErrorCode::SUCCEED;
 }
 
-void KVRaft::get_internal(GetReply& _return, const GetParams& params)
+void KVRaft::get_internal(GetReply &_return, const GetParams &params)
 {
-    if (um_.find(params.key) == um_.end()) {
+    if (um_.find(params.key) == um_.end())
+    {
         _return.code = ErrorCode::ERR_NO_KEY;
-    } else {
+    }
+    else
+    {
         _return.code = ErrorCode::SUCCEED;
         _return.value = um_[params.key];
     }

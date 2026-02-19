@@ -13,6 +13,7 @@ KVClerk::KVClerk(std::vector<Host>& hosts)
 
 void KVClerk::putAppend(PutAppendReply& _return, const PutAppendParams& params)
 {
+    // 发送到记录的 leader 服务器
     if (leaderId_ != -1) {
         putAppendTo(leaderId_, _return, params);
         if (_return.code == ErrorCode::ERR_WRONG_LEADER) {
@@ -20,6 +21,7 @@ void KVClerk::putAppend(PutAppendReply& _return, const PutAppendParams& params)
         }
     }
 
+    // 没有记录leader，给每个服务器都发一个消息，返回success的记录为leader
     if (leaderId_ == -1) {
         for (uint i = 0; i < hosts_.size(); i++) {
             putAppendTo(i, _return, params);

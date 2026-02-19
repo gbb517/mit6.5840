@@ -7,14 +7,16 @@
 
 #include <rpc/kvraft/KVRaft_types.h>
 
-enum class KVArgsOP {
+enum class KVArgsOP
+{
     PUT = 0,
     GET,
 };
 
-inline constexpr const char* opStr(KVArgsOP op)
+inline constexpr const char *opStr(KVArgsOP op)
 {
-    switch (op) {
+    switch (op)
+    {
     case KVArgsOP::PUT:
         return "PUT";
     case KVArgsOP::GET:
@@ -24,18 +26,19 @@ inline constexpr const char* opStr(KVArgsOP op)
     }
 }
 
-class KVArgs {
+class KVArgs
+{
 private:
     KVArgs() = default;
 
 public:
-    explicit KVArgs(const PutAppendParams& put)
+    explicit KVArgs(const PutAppendParams &put)
     {
         op_ = KVArgsOP::PUT;
         put_ = put;
     }
 
-    explicit KVArgs(const GetParams& get)
+    explicit KVArgs(const GetParams &get)
     {
         op_ = KVArgsOP::GET;
         get_ = get;
@@ -46,39 +49,44 @@ public:
         return op_;
     }
 
-    void copyTo(PutAppendParams& put)
+    void copyTo(PutAppendParams &put)
     {
         LOG_IF(FATAL, op_ != KVArgsOP::PUT) << "Expect PUT, got " << opStr(op_);
         put = put_;
     }
 
-    void copyTo(GetParams& get)
+    void copyTo(GetParams &get)
     {
-        LOG_IF(FATAL, op_ != KVArgsOP::PUT) << "Expect PUT, got " << opStr(op_);
+        LOG_IF(FATAL, op_ != KVArgsOP::GET) << "Expect GET, got " << opStr(op_);
         get = get_;
     }
 
-    static std::string serialize(const KVArgs& args)
+    static std::string serialize(const KVArgs &args)
     {
         std::ostringstream ss;
 
-        switch (args.op_) {
-        case KVArgsOP::PUT: {
-            auto& put = args.put_;
+        switch (args.op_)
+        {
+        case KVArgsOP::PUT:
+        {
+            auto &put = args.put_;
 
             ss << opStr(args.op_) << ' '
                << put.key << ' ' << put.value << ' '
                << static_cast<int>(put.op) << ' '
-               << put.gid << put.sid;
-        } break;
+               << put.gid << ' ' << put.sid;
+        }
+        break;
 
-        case KVArgsOP::GET: {
-            auto& get = args.get_;
+        case KVArgsOP::GET:
+        {
+            auto &get = args.get_;
 
-            ss << opStr(args.op_)
+            ss << opStr(args.op_) << ' '
                << get.key << ' '
                << get.gid << ' ' << get.sid;
-        } break;
+        }
+        break;
 
         default:
             LOG(FATAL) << "Unexpected state" << opStr(args.op_);
@@ -92,22 +100,26 @@ public:
         std::istringstream iss(cmd);
         std::string cmdType;
         iss >> cmdType;
-        if (cmdType.rfind(opStr(KVArgsOP::PUT), 0) == 0) {
+        if (cmdType.rfind(opStr(KVArgsOP::PUT), 0) == 0)
+        {
             PutAppendParams params;
             int putOp;
-            iss >> params.key >> params.value
-                >> putOp >> params.gid >> params.sid;
+            iss >> params.key >> params.value >> putOp >> params.gid >> params.sid;
             params.op = static_cast<PutOp::type>(putOp);
 
             args.op_ = KVArgsOP::PUT;
             args.put_ = params;
-        } else if (cmdType.rfind(opStr(KVArgsOP::GET), 0) == 0) {
+        }
+        else if (cmdType.rfind(opStr(KVArgsOP::GET), 0) == 0)
+        {
             GetParams params;
             iss >> params.key >> params.gid >> params.sid;
 
             args.op_ = KVArgsOP::GET;
             args.get_ = params;
-        } else {
+        }
+        else
+        {
             LOG(FATAL) << "Unkonw cmd: " << cmd;
         }
         return args;
