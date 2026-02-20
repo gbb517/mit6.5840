@@ -6,6 +6,7 @@
 #include <signal.h>
 #include <sstream>
 #include <string>
+#include <sys/wait.h>
 #include <unistd.h>
 
 #include <fmt/format.h>
@@ -15,14 +16,12 @@
 #include <thrift/transport/TSocket.h>
 #include <thrift/transport/TTransportUtils.h>
 
-class ProcessManager {
+class ProcessManager
+{
 public:
     ProcessManager(Host me, std::string log_dir,
-        std::function<std::shared_ptr<apache::thrift::TProcessor>()> processorCreator)
-        : pid_(-1)
-        , me_(me)
-        , log_dir_(log_dir)
-        , processorCreator_(processorCreator)
+                   std::function<std::shared_ptr<apache::thrift::TProcessor>()> processorCreator)
+        : pid_(-1), me_(me), log_dir_(log_dir), processorCreator_(processorCreator)
     {
     }
 
@@ -43,7 +42,8 @@ public:
             return;
 
         pid_ = fork();
-        if (pid_ == 0) {
+        if (pid_ == 0)
+        {
             if (google::IsGoogleLoggingInitialized())
                 google::ShutdownGoogleLogging();
 
@@ -64,7 +64,8 @@ public:
 
     void killProcess()
     {
-        if (pid_ > 0) {
+        if (pid_ > 0)
+        {
             kill(pid_, SIGKILL);
             wait(&pid_);
             pid_ = -1;

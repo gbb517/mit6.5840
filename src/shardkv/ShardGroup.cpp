@@ -41,6 +41,16 @@ void ShardManger::apply(ApplyMsg msg)
     }
     break;
 
+    case KVArgsOP::DEL:
+    {
+        DeleteReply reply;
+        DeleteParams dp;
+        args.copyTo(dp);
+        handleDel(reply, dp);
+        rep = ShardReply(reply);
+    }
+    break;
+
     default:
         LOG(FATAL) << "Unexpected op: " << static_cast<int>(args.op());
     }
@@ -80,6 +90,19 @@ void ShardManger::handleGet(GetReply &_return, const GetParams &params)
 
     auto &shard = shards_[sid];
     _return = shard.kv.get(params);
+}
+
+void ShardManger::handleDel(DeleteReply &_return, const DeleteParams &params)
+{
+    ShardId sid = params.sid;
+    if (checkShard(sid, _return.code) != ErrorCode::SUCCEED)
+    {
+        _return.deleted = 0;
+        return;
+    }
+
+    auto &shard = shards_[sid];
+    _return = shard.kv.del(params);
 }
 
 ErrorCode::type ShardManger::checkShard(ShardId sid, ErrorCode::type &code)
@@ -254,6 +277,23 @@ void ShardManger::stopShard(ShardId sid)
     it->second.status = ShardStatus::STOP;
 }
 
+void ShardManger::del(DeleteReply &_return, const DeleteParams &params)
+{
+    handleDel(_return, params);
+}
+
+void ShardManger::prefixScan(PrefixScanReply &_return, const PrefixScanParams &params)
+{
+    ShardId sid = params.sid;
+    if (checkShard(sid, _return.code) != ErrorCode::SUCCEED)
+    {
+        _return.done = true;
+        return;
+    }
+    auto &shard = shards_[sid];
+    _return = shard.kv.prefixScan(params);
+}
+
 void ShardGroup::ensureShardServing(ShardId sid)
 {
     shardManger_.ensureShardServing(sid);
@@ -308,6 +348,42 @@ void ShardGroup::get(GetReply &_return, const GetParams &params)
     {
         _return.code = ErrorCode::ERR_WRONG_LEADER;
     }
+}
+
+void ShardGroup::del(DeleteReply &_return, const DeleteParams &params)
+{
+    KVArgs args(params);
+    std::future<ShardReply> f;
+    bool isLeader = sendArgsToRaft(f, args);
+
+    if (isLeader)
+    {
+        f.wait();
+        auto rep = f.get();
+        rep.copyTo(_return);
+    }
+    else
+    {
+        _return.code = ErrorCode::ERR_WRONG_LEADER;
+        _return.deleted = 0;
+    }
+}
+
+void ShardGroup::prefixScan(PrefixScanReply &_return, const PrefixScanParams &params)
+{
+    if (!standalone_)
+    {
+        RaftState rs;
+        raft_->getState(rs);
+        if (rs.state != ServerState::LEADER)
+        {
+            _return.code = ErrorCode::ERR_WRONG_LEADER;
+            _return.done = true;
+            return;
+        }
+    }
+
+    shardManger_.prefixScan(_return, params);
 }
 
 bool ShardGroup::sendArgsToRaft(std::future<ShardReply> &f, const KVArgs &args)

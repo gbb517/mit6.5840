@@ -11,6 +11,7 @@ enum class KVArgsOP
 {
     PUT = 0,
     GET,
+    DEL,
 };
 
 inline constexpr const char *opStr(KVArgsOP op)
@@ -21,6 +22,8 @@ inline constexpr const char *opStr(KVArgsOP op)
         return "PUT";
     case KVArgsOP::GET:
         return "GET";
+    case KVArgsOP::DEL:
+        return "DEL";
     default:
         LOG(FATAL) << "Unexpected op: " << static_cast<int>(op);
     }
@@ -44,6 +47,12 @@ public:
         get_ = get;
     }
 
+    explicit KVArgs(const DeleteParams &del)
+    {
+        op_ = KVArgsOP::DEL;
+        del_ = del;
+    }
+
     KVArgsOP op()
     {
         return op_;
@@ -59,6 +68,12 @@ public:
     {
         LOG_IF(FATAL, op_ != KVArgsOP::GET) << "Expect GET, got " << opStr(op_);
         get = get_;
+    }
+
+    void copyTo(DeleteParams &del)
+    {
+        LOG_IF(FATAL, op_ != KVArgsOP::DEL) << "Expect DEL, got " << opStr(op_);
+        del = del_;
     }
 
     static std::string serialize(const KVArgs &args)
@@ -85,6 +100,15 @@ public:
             ss << opStr(args.op_) << ' '
                << get.key << ' '
                << get.gid << ' ' << get.sid;
+        }
+        break;
+
+        case KVArgsOP::DEL:
+        {
+            auto &del = args.del_;
+            ss << opStr(args.op_) << ' '
+               << del.key << ' '
+               << del.gid << ' ' << del.sid;
         }
         break;
 
@@ -118,6 +142,14 @@ public:
             args.op_ = KVArgsOP::GET;
             args.get_ = params;
         }
+        else if (cmdType.rfind(opStr(KVArgsOP::DEL), 0) == 0)
+        {
+            DeleteParams params;
+            iss >> params.key >> params.gid >> params.sid;
+
+            args.op_ = KVArgsOP::DEL;
+            args.del_ = params;
+        }
         else
         {
             LOG(FATAL) << "Unkonw cmd: " << cmd;
@@ -129,6 +161,7 @@ private:
     KVArgsOP op_;
     PutAppendParams put_;
     GetParams get_;
+    DeleteParams del_;
 };
 
 #endif

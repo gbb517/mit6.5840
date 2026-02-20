@@ -125,6 +125,32 @@ struct GetReply {
     2: string value;
 }
 
+struct DeleteParams {
+    1: string key;
+    2: GID gid;
+    3: ShardId sid;
+}
+
+struct DeleteReply {
+    1: ErrorCode code;
+    2: i32 deleted;
+}
+
+struct PrefixScanParams {
+    1: string prefix;
+    2: string cursor;
+    3: i32 count;
+    4: GID gid;
+    5: ShardId sid;
+}
+
+struct PrefixScanReply {
+    1: ErrorCode code;
+    2: map<string, string> kvs;
+    3: string nextCursor;
+    4: bool done;
+}
+
 struct InstallSnapshotParams {
     1: TermId term,
     2: Host leaderId,
@@ -211,6 +237,10 @@ service KVRaft extends Raft{
     PutAppendReply putAppend(1: PutAppendParams params);
 
     GetReply get(1: GetParams params);
+
+    DeleteReply del(1: DeleteParams params);
+
+    PrefixScanReply prefixScan(1: PrefixScanParams params);
 }
 
 service ShardCtrler extends Raft {

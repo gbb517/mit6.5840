@@ -1,4 +1,5 @@
 #include <fstream>
+#include <algorithm>
 #include <sstream>
 #include <sys/wait.h>
 
@@ -74,6 +75,65 @@ void KVRaft::get(GetReply &_return, const GetParams &params)
 
     f.wait();
     _return = std::move(f.get());
+}
+
+void KVRaft::del(DeleteReply &_return, const DeleteParams &params)
+{
+    (void)params;
+    _return.code = ErrorCode::ERR_NOT_SUPPORT_OPERATOR;
+    _return.deleted = 0;
+}
+
+void KVRaft::prefixScan(PrefixScanReply &_return, const PrefixScanParams &params)
+{
+    _return.code = ErrorCode::SUCCEED;
+    _return.done = true;
+    _return.nextCursor.clear();
+
+    int limit = params.count <= 0 ? 50 : params.count;
+    int emitted = 0;
+    std::string cursor = params.cursor;
+
+    std::lock_guard<std::mutex> guard(lock_);
+    std::vector<std::string> keys;
+    keys.reserve(um_.size());
+    for (const auto &kv : um_)
+    {
+        keys.push_back(kv.first);
+    }
+    std::sort(keys.begin(), keys.end());
+
+    for (const auto &key : keys)
+    {
+        if (!cursor.empty() && key <= cursor)
+        {
+            continue;
+        }
+        if (key.size() < params.prefix.size() || key.compare(0, params.prefix.size(), params.prefix) != 0)
+        {
+            continue;
+        }
+        _return.kvs[key] = um_[key];
+        _return.nextCursor = key;
+        emitted++;
+        if (emitted >= limit)
+        {
+            break;
+        }
+    }
+
+    if (emitted >= limit)
+    {
+        for (const auto &key : keys)
+        {
+            if (key > _return.nextCursor && key.size() >= params.prefix.size() &&
+                key.compare(0, params.prefix.size(), params.prefix) == 0)
+            {
+                _return.done = false;
+                break;
+            }
+        }
+    }
 }
 
 void KVRaft::apply(ApplyMsg msg)

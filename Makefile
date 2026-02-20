@@ -1,4 +1,4 @@
-TARGETS = rpc mMapReduce raft kvraft shardkv
+TARGETS = rpc mMapReduce raft kvraft shardkv redisproxy
 .PHONY: $(TARGETS) count-line clean
 
 all: $(TARGETS)
@@ -18,6 +18,9 @@ rpc:
 shardkv: rpc raft kvraft
 	make -C src/$@
 
+redisproxy: rpc raft kvraft shardkv
+	make -C src/$@
+
 count-line:
 	find . -type f    \
 		| grep -E ".*\.(cpp|h|hpp|sh|py|thrift)|Makefile"   \
@@ -31,4 +34,5 @@ clean:
 	make -C src/raft clean 
 	make -C src/kvraft clean
 	make -C src/shardkv clean
+	make -C src/redisproxy clean
 	make -C src/rpc clean

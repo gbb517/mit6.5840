@@ -117,6 +117,14 @@ class GetParams;
 
 class GetReply;
 
+class DeleteParams;
+
+class DeleteReply;
+
+class PrefixScanParams;
+
+class PrefixScanReply;
+
 class InstallSnapshotParams;
 
 class JoinArgs;
@@ -744,6 +752,198 @@ class GetReply : public virtual ::apache::thrift::TBase {
 void swap(GetReply &a, GetReply &b);
 
 std::ostream& operator<<(std::ostream& out, const GetReply& obj);
+
+typedef struct _DeleteParams__isset {
+  _DeleteParams__isset() : key(false), gid(false), sid(false) {}
+  bool key :1;
+  bool gid :1;
+  bool sid :1;
+} _DeleteParams__isset;
+
+class DeleteParams : public virtual ::apache::thrift::TBase {
+ public:
+
+  DeleteParams(const DeleteParams&);
+  DeleteParams& operator=(const DeleteParams&);
+  DeleteParams() noexcept;
+
+  virtual ~DeleteParams() noexcept;
+  std::string key;
+  GID gid;
+  ShardId sid;
+
+  _DeleteParams__isset __isset;
+
+  void __set_key(const std::string& val);
+
+  void __set_gid(const GID val);
+
+  void __set_sid(const ShardId val);
+
+  bool operator == (const DeleteParams & rhs) const;
+  bool operator != (const DeleteParams &rhs) const {
+    return !(*this == rhs);
+  }
+
+  bool operator < (const DeleteParams & ) const;
+
+  uint32_t read(::apache::thrift::protocol::TProtocol* iprot) override;
+  uint32_t write(::apache::thrift::protocol::TProtocol* oprot) const override;
+
+  virtual void printTo(std::ostream& out) const;
+};
+
+void swap(DeleteParams &a, DeleteParams &b);
+
+std::ostream& operator<<(std::ostream& out, const DeleteParams& obj);
+
+typedef struct _DeleteReply__isset {
+  _DeleteReply__isset() : code(false), deleted(false) {}
+  bool code :1;
+  bool deleted :1;
+} _DeleteReply__isset;
+
+class DeleteReply : public virtual ::apache::thrift::TBase {
+ public:
+
+  DeleteReply(const DeleteReply&) noexcept;
+  DeleteReply& operator=(const DeleteReply&) noexcept;
+  DeleteReply() noexcept;
+
+  virtual ~DeleteReply() noexcept;
+  /**
+   * 
+   * @see ErrorCode
+   */
+  ErrorCode::type code;
+  int32_t deleted;
+
+  _DeleteReply__isset __isset;
+
+  void __set_code(const ErrorCode::type val);
+
+  void __set_deleted(const int32_t val);
+
+  bool operator == (const DeleteReply & rhs) const;
+  bool operator != (const DeleteReply &rhs) const {
+    return !(*this == rhs);
+  }
+
+  bool operator < (const DeleteReply & ) const;
+
+  uint32_t read(::apache::thrift::protocol::TProtocol* iprot) override;
+  uint32_t write(::apache::thrift::protocol::TProtocol* oprot) const override;
+
+  virtual void printTo(std::ostream& out) const;
+};
+
+void swap(DeleteReply &a, DeleteReply &b);
+
+std::ostream& operator<<(std::ostream& out, const DeleteReply& obj);
+
+typedef struct _PrefixScanParams__isset {
+  _PrefixScanParams__isset() : prefix(false), cursor(false), count(false), gid(false), sid(false) {}
+  bool prefix :1;
+  bool cursor :1;
+  bool count :1;
+  bool gid :1;
+  bool sid :1;
+} _PrefixScanParams__isset;
+
+class PrefixScanParams : public virtual ::apache::thrift::TBase {
+ public:
+
+  PrefixScanParams(const PrefixScanParams&);
+  PrefixScanParams& operator=(const PrefixScanParams&);
+  PrefixScanParams() noexcept;
+
+  virtual ~PrefixScanParams() noexcept;
+  std::string prefix;
+  std::string cursor;
+  int32_t count;
+  GID gid;
+  ShardId sid;
+
+  _PrefixScanParams__isset __isset;
+
+  void __set_prefix(const std::string& val);
+
+  void __set_cursor(const std::string& val);
+
+  void __set_count(const int32_t val);
+
+  void __set_gid(const GID val);
+
+  void __set_sid(const ShardId val);
+
+  bool operator == (const PrefixScanParams & rhs) const;
+  bool operator != (const PrefixScanParams &rhs) const {
+    return !(*this == rhs);
+  }
+
+  bool operator < (const PrefixScanParams & ) const;
+
+  uint32_t read(::apache::thrift::protocol::TProtocol* iprot) override;
+  uint32_t write(::apache::thrift::protocol::TProtocol* oprot) const override;
+
+  virtual void printTo(std::ostream& out) const;
+};
+
+void swap(PrefixScanParams &a, PrefixScanParams &b);
+
+std::ostream& operator<<(std::ostream& out, const PrefixScanParams& obj);
+
+typedef struct _PrefixScanReply__isset {
+  _PrefixScanReply__isset() : code(false), kvs(false), nextCursor(false), done(false) {}
+  bool code :1;
+  bool kvs :1;
+  bool nextCursor :1;
+  bool done :1;
+} _PrefixScanReply__isset;
+
+class PrefixScanReply : public virtual ::apache::thrift::TBase {
+ public:
+
+  PrefixScanReply(const PrefixScanReply&);
+  PrefixScanReply& operator=(const PrefixScanReply&);
+  PrefixScanReply() noexcept;
+
+  virtual ~PrefixScanReply() noexcept;
+  /**
+   * 
+   * @see ErrorCode
+   */
+  ErrorCode::type code;
+  std::map<std::string, std::string>  kvs;
+  std::string nextCursor;
+  bool done;
+
+  _PrefixScanReply__isset __isset;
+
+  void __set_code(const ErrorCode::type val);
+
+  void __set_kvs(const std::map<std::string, std::string> & val);
+
+  void __set_nextCursor(const std::string& val);
+
+  void __set_done(const bool val);
+
+  bool operator == (const PrefixScanReply & rhs) const;
+  bool operator != (const PrefixScanReply &rhs) const {
+    return !(*this == rhs);
+  }
+
+  bool operator < (const PrefixScanReply & ) const;
+
+  uint32_t read(::apache::thrift::protocol::TProtocol* iprot) override;
+  uint32_t write(::apache::thrift::protocol::TProtocol* oprot) const override;
+
+  virtual void printTo(std::ostream& out) const;
+};
+
+void swap(PrefixScanReply &a, PrefixScanReply &b);
+
+std::ostream& operator<<(std::ostream& out, const PrefixScanReply& obj);
 
 typedef struct _InstallSnapshotParams__isset {
   _InstallSnapshotParams__isset() : term(false), leaderId(false), lastIncludedIndex(false), lastIncludedTerm(false), offset(false), data(false), done(false), gid(false) {}

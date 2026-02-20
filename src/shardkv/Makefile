@@ -10,10 +10,13 @@ OBJECTS     = $(SHARDKV_OBJ)
 
 DEPENDENCIES = $(LIB_DIR)/libraft.a $(LIB_DIR)/libkvraft-rpc.a $(LIB_DIR)/libkvraft.a 
 
-all: $(LIB_DIR)/libshardkvraft.a
+all: $(LIB_DIR)/libshardkvraft.a $(BIN)/shardkv_backend
 
 $(LIB_DIR)/libshardkvraft.a: $(OBJECTS) $(DEPENDENCIES)
 	$(AR) $@ $(OBJECTS)
+
+$(BIN)/shardkv_backend: BackendMain.cpp $(OBJECTS) $(DEPENDENCIES)
+	$(CC) BackendMain.cpp $(OBJECTS) $(CPPFLAGS) $(LIBS) $(LDFLAGS) $(INC) -I ../../include -o $@
 
 # generate object file
 -include $(OBJECTS:.o=.d)
@@ -31,4 +34,4 @@ $(OBJECTS): %.o:
 
 .PHONY: clean
 clean:
-	rm -rf $(LIB_DIR)/libshardkvraft.a $(OBJECTS)
+	rm -rf $(LIB_DIR)/libshardkvraft.a $(BIN)/shardkv_backend $(OBJECTS)

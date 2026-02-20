@@ -15,6 +15,10 @@ public:
 
     void get(GetReply &_return, const GetParams &params);
 
+    void del(DeleteReply &_return, const DeleteParams &params);
+
+    void prefixScan(PrefixScanReply &_return, const PrefixScanParams &params);
+
 private:
     ShardId key2shard(const std::string &key, int shardNum) const;
     ShardctrlerClerk ctrlerClerk_;

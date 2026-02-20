@@ -25,6 +25,8 @@ class KVRaftIf : virtual public RaftIf {
   virtual ~KVRaftIf() {}
   virtual void putAppend(PutAppendReply& _return, const PutAppendParams& params) = 0;
   virtual void get(GetReply& _return, const GetParams& params) = 0;
+  virtual void del(DeleteReply& _return, const DeleteParams& params) = 0;
+  virtual void prefixScan(PrefixScanReply& _return, const PrefixScanParams& params) = 0;
 };
 
 class KVRaftIfFactory : virtual public RaftIfFactory {
@@ -58,6 +60,12 @@ class KVRaftNull : virtual public KVRaftIf , virtual public RaftNull {
     return;
   }
   void get(GetReply& /* _return */, const GetParams& /* params */) override {
+    return;
+  }
+  void del(DeleteReply& /* _return */, const DeleteParams& /* params */) override {
+    return;
+  }
+  void prefixScan(PrefixScanReply& /* _return */, const PrefixScanParams& /* params */) override {
     return;
   }
 };
@@ -246,6 +254,190 @@ class KVRaft_get_presult {
 
 };
 
+typedef struct _KVRaft_del_args__isset {
+  _KVRaft_del_args__isset() : params(false) {}
+  bool params :1;
+} _KVRaft_del_args__isset;
+
+class KVRaft_del_args {
+ public:
+
+  KVRaft_del_args(const KVRaft_del_args&);
+  KVRaft_del_args& operator=(const KVRaft_del_args&);
+  KVRaft_del_args() noexcept;
+
+  virtual ~KVRaft_del_args() noexcept;
+  DeleteParams params;
+
+  _KVRaft_del_args__isset __isset;
+
+  void __set_params(const DeleteParams& val);
+
+  bool operator == (const KVRaft_del_args & rhs) const;
+  bool operator != (const KVRaft_del_args &rhs) const {
+    return !(*this == rhs);
+  }
+
+  bool operator < (const KVRaft_del_args & ) const;
+
+  uint32_t read(::apache::thrift::protocol::TProtocol* iprot);
+  uint32_t write(::apache::thrift::protocol::TProtocol* oprot) const;
+
+};
+
+
+class KVRaft_del_pargs {
+ public:
+
+
+  virtual ~KVRaft_del_pargs() noexcept;
+  const DeleteParams* params;
+
+  uint32_t write(::apache::thrift::protocol::TProtocol* oprot) const;
+
+};
+
+typedef struct _KVRaft_del_result__isset {
+  _KVRaft_del_result__isset() : success(false) {}
+  bool success :1;
+} _KVRaft_del_result__isset;
+
+class KVRaft_del_result {
+ public:
+
+  KVRaft_del_result(const KVRaft_del_result&) noexcept;
+  KVRaft_del_result& operator=(const KVRaft_del_result&) noexcept;
+  KVRaft_del_result() noexcept;
+
+  virtual ~KVRaft_del_result() noexcept;
+  DeleteReply success;
+
+  _KVRaft_del_result__isset __isset;
+
+  void __set_success(const DeleteReply& val);
+
+  bool operator == (const KVRaft_del_result & rhs) const;
+  bool operator != (const KVRaft_del_result &rhs) const {
+    return !(*this == rhs);
+  }
+
+  bool operator < (const KVRaft_del_result & ) const;
+
+  uint32_t read(::apache::thrift::protocol::TProtocol* iprot);
+  uint32_t write(::apache::thrift::protocol::TProtocol* oprot) const;
+
+};
+
+typedef struct _KVRaft_del_presult__isset {
+  _KVRaft_del_presult__isset() : success(false) {}
+  bool success :1;
+} _KVRaft_del_presult__isset;
+
+class KVRaft_del_presult {
+ public:
+
+
+  virtual ~KVRaft_del_presult() noexcept;
+  DeleteReply* success;
+
+  _KVRaft_del_presult__isset __isset;
+
+  uint32_t read(::apache::thrift::protocol::TProtocol* iprot);
+
+};
+
+typedef struct _KVRaft_prefixScan_args__isset {
+  _KVRaft_prefixScan_args__isset() : params(false) {}
+  bool params :1;
+} _KVRaft_prefixScan_args__isset;
+
+class KVRaft_prefixScan_args {
+ public:
+
+  KVRaft_prefixScan_args(const KVRaft_prefixScan_args&);
+  KVRaft_prefixScan_args& operator=(const KVRaft_prefixScan_args&);
+  KVRaft_prefixScan_args() noexcept;
+
+  virtual ~KVRaft_prefixScan_args() noexcept;
+  PrefixScanParams params;
+
+  _KVRaft_prefixScan_args__isset __isset;
+
+  void __set_params(const PrefixScanParams& val);
+
+  bool operator == (const KVRaft_prefixScan_args & rhs) const;
+  bool operator != (const KVRaft_prefixScan_args &rhs) const {
+    return !(*this == rhs);
+  }
+
+  bool operator < (const KVRaft_prefixScan_args & ) const;
+
+  uint32_t read(::apache::thrift::protocol::TProtocol* iprot);
+  uint32_t write(::apache::thrift::protocol::TProtocol* oprot) const;
+
+};
+
+
+class KVRaft_prefixScan_pargs {
+ public:
+
+
+  virtual ~KVRaft_prefixScan_pargs() noexcept;
+  const PrefixScanParams* params;
+
+  uint32_t write(::apache::thrift::protocol::TProtocol* oprot) const;
+
+};
+
+typedef struct _KVRaft_prefixScan_result__isset {
+  _KVRaft_prefixScan_result__isset() : success(false) {}
+  bool success :1;
+} _KVRaft_prefixScan_result__isset;
+
+class KVRaft_prefixScan_result {
+ public:
+
+  KVRaft_prefixScan_result(const KVRaft_prefixScan_result&);
+  KVRaft_prefixScan_result& operator=(const KVRaft_prefixScan_result&);
+  KVRaft_prefixScan_result() noexcept;
+
+  virtual ~KVRaft_prefixScan_result() noexcept;
+  PrefixScanReply success;
+
+  _KVRaft_prefixScan_result__isset __isset;
+
+  void __set_success(const PrefixScanReply& val);
+
+  bool operator == (const KVRaft_prefixScan_result & rhs) const;
+  bool operator != (const KVRaft_prefixScan_result &rhs) const {
+    return !(*this == rhs);
+  }
+
+  bool operator < (const KVRaft_prefixScan_result & ) const;
+
+  uint32_t read(::apache::thrift::protocol::TProtocol* iprot);
+  uint32_t write(::apache::thrift::protocol::TProtocol* oprot) const;
+
+};
+
+typedef struct _KVRaft_prefixScan_presult__isset {
+  _KVRaft_prefixScan_presult__isset() : success(false) {}
+  bool success :1;
+} _KVRaft_prefixScan_presult__isset;
+
+class KVRaft_prefixScan_presult {
+ public:
+
+
+  virtual ~KVRaft_prefixScan_presult() noexcept;
+  PrefixScanReply* success;
+
+  _KVRaft_prefixScan_presult__isset __isset;
+
+  uint32_t read(::apache::thrift::protocol::TProtocol* iprot);
+
+};
+
 class KVRaftClient : virtual public KVRaftIf, public RaftClient {
  public:
   KVRaftClient(std::shared_ptr< ::apache::thrift::protocol::TProtocol> prot) :
@@ -263,6 +455,12 @@ class KVRaftClient : virtual public KVRaftIf, public RaftClient {
   void get(GetReply& _return, const GetParams& params) override;
   void send_get(const GetParams& params);
   void recv_get(GetReply& _return);
+  void del(DeleteReply& _return, const DeleteParams& params) override;
+  void send_del(const DeleteParams& params);
+  void recv_del(DeleteReply& _return);
+  void prefixScan(PrefixScanReply& _return, const PrefixScanParams& params) override;
+  void send_prefixScan(const PrefixScanParams& params);
+  void recv_prefixScan(PrefixScanReply& _return);
 };
 
 class KVRaftProcessor : public RaftProcessor {
@@ -275,12 +473,16 @@ class KVRaftProcessor : public RaftProcessor {
   ProcessMap processMap_;
   void process_putAppend(int32_t seqid, ::apache::thrift::protocol::TProtocol* iprot, ::apache::thrift::protocol::TProtocol* oprot, void* callContext);
   void process_get(int32_t seqid, ::apache::thrift::protocol::TProtocol* iprot, ::apache::thrift::protocol::TProtocol* oprot, void* callContext);
+  void process_del(int32_t seqid, ::apache::thrift::protocol::TProtocol* iprot, ::apache::thrift::protocol::TProtocol* oprot, void* callContext);
+  void process_prefixScan(int32_t seqid, ::apache::thrift::protocol::TProtocol* iprot, ::apache::thrift::protocol::TProtocol* oprot, void* callContext);
  public:
   KVRaftProcessor(::std::shared_ptr<KVRaftIf> iface) :
     RaftProcessor(iface),
     iface_(iface) {
     processMap_["putAppend"] = &KVRaftProcessor::process_putAppend;
     processMap_["get"] = &KVRaftProcessor::process_get;
+    processMap_["del"] = &KVRaftProcessor::process_del;
+    processMap_["prefixScan"] = &KVRaftProcessor::process_prefixScan;
   }
 
   virtual ~KVRaftProcessor() {}
@@ -334,6 +536,26 @@ class KVRaftMultiface : virtual public KVRaftIf, public RaftMultiface {
     return;
   }
 
+  void del(DeleteReply& _return, const DeleteParams& params) override {
+    size_t sz = ifaces_.size();
+    size_t i = 0;
+    for (; i < (sz - 1); ++i) {
+      ifaces_[i]->del(_return, params);
+    }
+    ifaces_[i]->del(_return, params);
+    return;
+  }
+
+  void prefixScan(PrefixScanReply& _return, const PrefixScanParams& params) override {
+    size_t sz = ifaces_.size();
+    size_t i = 0;
+    for (; i < (sz - 1); ++i) {
+      ifaces_[i]->prefixScan(_return, params);
+    }
+    ifaces_[i]->prefixScan(_return, params);
+    return;
+  }
+
 };
 
 // The 'concurrent' client is a thread safe client that correctly handles
@@ -356,6 +578,12 @@ class KVRaftConcurrentClient : virtual public KVRaftIf, public RaftConcurrentCli
   void get(GetReply& _return, const GetParams& params) override;
   int32_t send_get(const GetParams& params);
   void recv_get(GetReply& _return, const int32_t seqid);
+  void del(DeleteReply& _return, const DeleteParams& params) override;
+  int32_t send_del(const DeleteParams& params);
+  void recv_del(DeleteReply& _return, const int32_t seqid);
+  void prefixScan(PrefixScanReply& _return, const PrefixScanParams& params) override;
+  int32_t send_prefixScan(const PrefixScanParams& params);
+  void recv_prefixScan(PrefixScanReply& _return, const int32_t seqid);
 };
 
 #ifdef _MSC_VER

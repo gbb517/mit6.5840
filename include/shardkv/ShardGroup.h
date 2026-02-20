@@ -56,9 +56,14 @@ public:
 
     void stopShard(ShardId sid);
 
+    void del(DeleteReply &_return, const DeleteParams &params);
+
+    void prefixScan(PrefixScanReply &_return, const PrefixScanParams &params);
+
 private:
     void handlePutAppend(PutAppendReply &_return, const PutAppendParams &params);
     void handleGet(GetReply &_return, const GetParams &params);
+    void handleDel(DeleteReply &_return, const DeleteParams &params);
     ErrorCode::type checkShard(ShardId sid, ErrorCode::type &code);
 
 private:
@@ -99,6 +104,8 @@ public:
      */
     void putAppend(PutAppendReply &_return, const PutAppendParams &params) override;
     void get(GetReply &_return, const GetParams &params) override;
+    void del(DeleteReply &_return, const DeleteParams &params) override;
+    void prefixScan(PrefixScanReply &_return, const PrefixScanParams &params) override;
 
     /*
      * methods for RaftIf

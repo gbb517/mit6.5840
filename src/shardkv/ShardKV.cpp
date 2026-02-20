@@ -107,6 +107,86 @@ void ShardKV::get(GetReply &_return, const GetParams &params)
     group->get(_return, params);
 }
 
+void ShardKV::del(DeleteReply &_return, const DeleteParams &params)
+{
+    if (params.gid < 0 || params.sid < 0)
+    {
+        _return.code = ErrorCode::ERR_INVALID_SHARD;
+        _return.deleted = 0;
+        return;
+    }
+
+    std::shared_ptr<ShardGroup> group;
+    {
+        std::lock_guard<std::mutex> guard(lock_);
+        if (ownedShards_.find(params.sid) == ownedShards_.end() || myGids_.find(params.gid) == myGids_.end())
+        {
+            _return.code = ErrorCode::ERR_NO_SHARD;
+            _return.deleted = 0;
+            return;
+        }
+
+        if (!currentConfig_.shard2gid.empty() && params.sid < static_cast<int>(currentConfig_.shard2gid.size()) &&
+            currentConfig_.shard2gid[params.sid] != params.gid)
+        {
+            _return.code = ErrorCode::ERR_NO_SHARD;
+            _return.deleted = 0;
+            return;
+        }
+
+        auto it = groups_.find(params.gid);
+        if (it == groups_.end())
+        {
+            _return.code = ErrorCode::ERR_NO_SUCH_GROUP;
+            _return.deleted = 0;
+            return;
+        }
+        group = it->second;
+    }
+
+    group->del(_return, params);
+}
+
+void ShardKV::prefixScan(PrefixScanReply &_return, const PrefixScanParams &params)
+{
+    if (params.gid < 0 || params.sid < 0)
+    {
+        _return.code = ErrorCode::ERR_INVALID_SHARD;
+        _return.done = true;
+        return;
+    }
+
+    std::shared_ptr<ShardGroup> group;
+    {
+        std::lock_guard<std::mutex> guard(lock_);
+        if (ownedShards_.find(params.sid) == ownedShards_.end() || myGids_.find(params.gid) == myGids_.end())
+        {
+            _return.code = ErrorCode::ERR_NO_SHARD;
+            _return.done = true;
+            return;
+        }
+
+        if (!currentConfig_.shard2gid.empty() && params.sid < static_cast<int>(currentConfig_.shard2gid.size()) &&
+            currentConfig_.shard2gid[params.sid] != params.gid)
+        {
+            _return.code = ErrorCode::ERR_NO_SHARD;
+            _return.done = true;
+            return;
+        }
+
+        auto it = groups_.find(params.gid);
+        if (it == groups_.end())
+        {
+            _return.code = ErrorCode::ERR_NO_SUCH_GROUP;
+            _return.done = true;
+            return;
+        }
+        group = it->second;
+    }
+
+    group->prefixScan(_return, params);
+}
+
 void ShardKV::requestVote(RequestVoteResult &_return, const RequestVoteParams &params)
 {
     std::shared_ptr<ShardGroup> group;

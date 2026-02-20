@@ -1328,3 +1328,64 @@ TEST_F(ShardKVTest, TestChallenge2Partial)
 
     startKV(1);
 }
+
+TEST_F(ShardKVTest, TestDel4B)
+{
+    initCtrlers(3);
+    initShardKVs(2);
+
+    ShardctrlerClerk mck(ctrlHosts_);
+    ShardKVClerk ck(ctrlHosts_);
+    joinGroup(mck, 100, {kvHosts_[0]});
+
+    ASSERT_TRUE(putRetry(ck, "del-key", "value", PutOp::PUT));
+
+    DeleteParams dp;
+    dp.key = "del-key";
+    DeleteReply dr;
+    ck.del(dr, dp);
+    ASSERT_EQ(dr.code, ErrorCode::SUCCEED);
+    ASSERT_EQ(dr.deleted, 1);
+
+    GetReply gr;
+    ASSERT_TRUE(getRetry(ck, "del-key", gr));
+    ASSERT_EQ(gr.code, ErrorCode::ERR_NO_KEY);
+}
+
+TEST_F(ShardKVTest, TestPrefixScan4B)
+{
+    initCtrlers(3);
+    initShardKVs(2);
+
+    ShardctrlerClerk mck(ctrlHosts_);
+    ShardKVClerk ck(ctrlHosts_);
+    joinGroup(mck, 100, {kvHosts_[0]});
+
+    ASSERT_TRUE(putRetry(ck, "scan:1", "a", PutOp::PUT));
+    ASSERT_TRUE(putRetry(ck, "scan:2", "b", PutOp::PUT));
+    ASSERT_TRUE(putRetry(ck, "scan:3", "c", PutOp::PUT));
+    ASSERT_TRUE(putRetry(ck, "other:1", "x", PutOp::PUT));
+
+    PrefixScanParams sp;
+    sp.prefix = "scan:";
+    sp.count = 2;
+
+    PrefixScanReply sr1;
+    ck.prefixScan(sr1, sp);
+    ASSERT_EQ(sr1.code, ErrorCode::SUCCEED);
+    ASSERT_EQ(static_cast<int>(sr1.kvs.size()), 2);
+    ASSERT_FALSE(sr1.done);
+
+    PrefixScanParams sp2;
+    sp2.prefix = "scan:";
+    sp2.cursor = sr1.nextCursor;
+    sp2.count = 2;
+    PrefixScanReply sr2;
+    ck.prefixScan(sr2, sp2);
+    ASSERT_EQ(sr2.code, ErrorCode::SUCCEED);
+    ASSERT_EQ(static_cast<int>(sr2.kvs.size()), 1);
+    ASSERT_TRUE(sr2.done);
+
+    EXPECT_TRUE(sr1.kvs.find("other:1") == sr1.kvs.end());
+    EXPECT_TRUE(sr2.kvs.find("other:1") == sr2.kvs.end());
+}

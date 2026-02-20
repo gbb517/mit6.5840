@@ -1,19 +1,4 @@
-# 分布式系统（MIT6.824) C++实现
-
-本项目是对MIT6.824课程中分布式系统的C++实现。虽然6.824课程提供的是Go相关的资料，但出于深入理解C++的目的，本项目采用C++来完成课程的实验。为了确保正确的实现，本项目参考了6.824课程提供的测试代码，并使用`gtest`编写了大量的测试用例来验证程序功能。然而，考虑到系统的复杂性，难免可能会存在一些问题。如果发现任何问题，请尽情指出。
-
-### 参考资料
-
-1. [课程链接](https://pdos.csail.mit.edu/6.824/schedule.html)，分布式系统官方课程资料
-2. [logcabin](https://github.com/logcabin/logcabin.git)，raft原作者在论文里面提供的raft协议C++实现
-3. [Lab4实现思路](https://github.com/OneSizeFitsQuorum/MIT6.824-2021/blob/master/docs/lab4.md)
-
-### 实现思路
-
-1. [MapReduce](doc/MapReduce.md)
-2. [Raft](doc/Raft.md)
-3. [KVRaft](doc/KVRaft.md)
-4. [ShardKV](doc/ShardKV.md)
+# 分布式系统（MIT6.824） C++实现
 
 ## 项目依赖
 
@@ -26,32 +11,6 @@
 | googletest | C++测试框架                         | 1.13.0 | https://github.com/google/googletest |
 | glog       | C++日志库，实现了应用级别的日志功能 | 0.6.0  | https://github.com/google/glog       |
 | gflags     | C++命令行参数解析工具               | 2.2.2  | https://github.com/gflags/gflags     |
-
-
-### MacOS
-
-运行如下命令安装本项目所需依赖
-
-```shell
-brew install thrift fmt gtest glog gflags
-```
-
-### Linux
-目前尝试过在ubuntu20.04环境下安装这些依赖，需要手动编译安装第三方库，流程不难但是比较繁琐。因此提供了一个预安装好所有依赖的docker镜像，配合VSCode进行远程开发，免去后续配置环境的麻烦，一举解决所有Linux平台上依赖的问题。
-
-```shell
-# 拉取镜像
-docker pull 1049696130/kvraft-dev
-
-# 运行docker容器（注意我的代码放在了~/Documents/MIT6.824这个目录下）
-docker run -dit -v ~/Documents/MIT6.824:/root/MIT6.824 --name mit-build 1049696130/kvraft-dev
-
-# 进入docker容器
-docker exec -it mit-build bash
-```
-
-### Windows
-建议用wsl2或者docker，在Linux环境下运行此项目。
 
 ## 构建项目
 
@@ -87,6 +46,55 @@ make kvraft
 ```shell
 make shardkv
 ```
+
+## Raft+Redis 一键起停（推荐）
+
+连接 `redis-cli` ，可以使用脚本一次启动后端（3个 ShardCtrler + 2个 ShardKV）以及 Redis 协议代理。
+
+### 三步命令
+
+```shell
+# 1) 启动整套环境
+./scripts/start_raft-redis.sh
+
+# 2) 连接并验证
+redis-cli -p 6381
+PING
+SET k1 v1
+GET k1
+HSET h1 f1 x
+HGET h1 f1
+
+# 3) 停止整套环境
+./scripts/stop_raft-redis.sh
+```
+
+### 可选参数
+
+```shell
+# 自定义端口与 ShardCtrler 地址
+REDIS_PORT=6390 CTRL_HOSTS=127.0.0.1:8101,127.0.0.1:8102,127.0.0.1:8103 ./scripts/start_raft-redis.sh
+```
+
+### 常见故障排查
+
+1. **`Address already in use` / 端口被占用**
+	- 先执行：`./scripts/stop_raft-redis.sh`
+	- 再重启：`./scripts/start_raft-redis.sh`
+
+2. **`redis-cli` 无法连接（Connection refused）**
+	- 确认启动脚本执行成功并输出了 `done`
+	- 检查 `redisproxy` 是否监听：`ss -ltnp | grep 6381`
+
+3. **`ERR backend unavailable`**
+	- 表示后端集群未就绪或已退出
+	- 查看日志：
+	  - `logs/raft-redis/out/shardkv_backend.out`
+	  - `logs/raft-redis/out/redisproxy.out`
+
+4. **日志目录错误或权限问题**
+	- 确认项目目录可写
+	- 必要时手动创建：`mkdir -p logs/backend logs/redisproxy logs/raft-redis`
 
 
 ## 系统测试

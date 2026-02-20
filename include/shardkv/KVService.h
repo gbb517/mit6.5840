@@ -2,6 +2,7 @@
 #define KVSERVICE_H
 
 #include <string>
+#include <map>
 #include <unordered_map>
 
 #include <rpc/kvraft/KVRaft_types.h>
@@ -16,6 +17,10 @@ public:
 
     GetReply get(const GetParams &params);
 
+    DeleteReply del(const DeleteParams &params);
+
+    PrefixScanReply prefixScan(const PrefixScanParams &params);
+
     std::unordered_map<std::string, std::string> snapshotData() const;
 
     void loadData(const std::unordered_map<std::string, std::string> &data);
@@ -23,6 +28,7 @@ public:
 private:
     ShardId sid_;
     std::unordered_map<std::string, std::string> um_;
+    std::map<std::string, std::string> ordered_;
 };
 
 #endif
