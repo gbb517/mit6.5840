@@ -47,6 +47,7 @@ private:
     void refreshOwnership(const Config &oldCfg, const Config &newCfg);
     void ensureLocalGroups(const Config &cfg);
     bool tryPullShardData(const Config &oldCfg, GID fromGid, ShardId sid, std::map<std::string, std::string> &data);
+    bool tryAckShardTransfer(const Config &oldCfg, GID fromGid, ShardId sid, int32_t configNum);
     std::string basePersisterDir() const;
 
 private:

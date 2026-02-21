@@ -7,10 +7,116 @@
 #include <chrono>
 #include <sys/stat.h>
 #include <tuple>
+#include <vector>
 
 #include <fmt/format.h>
 #include <thrift/Thrift.h>
 #include <tools/ClientManager.hpp>
+
+namespace
+{
+    constexpr const char *kMigrateMetaConfig = "__raftredis_migrate_meta__config";
+    constexpr const char *kMigrateMetaEpoch = "__raftredis_migrate_meta__epoch";
+    constexpr const char *kMigrateMetaSeq = "__raftredis_migrate_meta__seq";
+    constexpr const char *kMigrateOpPrefix = "__raftredis_migrate_op__";
+
+    bool startsWith(const std::string &value, const std::string &prefix)
+    {
+        return value.size() >= prefix.size() && value.compare(0, prefix.size(), prefix) == 0;
+    }
+
+    bool parseInt64(const std::string &s, int64_t &out)
+    {
+        try
+        {
+            out = std::stoll(s);
+            return true;
+        }
+        catch (...)
+        {
+            return false;
+        }
+    }
+
+    void applyDelta(std::map<std::string, std::string> &base, KVArgs &args)
+    {
+        switch (args.op())
+        {
+        case KVArgsOP::PUT:
+        {
+            PutAppendParams p;
+            args.copyTo(p);
+            if (p.op == PutOp::PUT)
+            {
+                base[p.key] = p.value;
+            }
+            else
+            {
+                base[p.key] += p.value;
+            }
+        }
+        break;
+        case KVArgsOP::DEL:
+        {
+            DeleteParams p;
+            args.copyTo(p);
+            base.erase(p.key);
+        }
+        break;
+        case KVArgsOP::GET:
+            break;
+        default:
+            break;
+        }
+    }
+
+    bool decodePulledShardData(const std::map<std::string, std::string> &raw,
+                               std::map<std::string, std::string> &materialized,
+                               int64_t &lastSeq)
+    {
+        materialized.clear();
+        std::vector<std::pair<int64_t, KVArgs>> ops;
+        lastSeq = 0;
+        bool hasSeq = false;
+
+        for (const auto &kv : raw)
+        {
+            if (kv.first == kMigrateMetaSeq)
+            {
+                hasSeq = parseInt64(kv.second, lastSeq);
+                continue;
+            }
+            if (kv.first == kMigrateMetaConfig || kv.first == kMigrateMetaEpoch)
+            {
+                continue;
+            }
+            if (startsWith(kv.first, kMigrateOpPrefix))
+            {
+                int64_t seq = 0;
+                if (!parseInt64(kv.first.substr(std::string(kMigrateOpPrefix).size()), seq))
+                {
+                    continue;
+                }
+                ops.emplace_back(seq, KVArgs::deserialize(kv.second));
+                continue;
+            }
+            materialized[kv.first] = kv.second;
+        }
+
+        if (!hasSeq)
+        {
+            return true;
+        }
+
+        std::sort(ops.begin(), ops.end(), [](const auto &l, const auto &r)
+                  { return l.first < r.first; });
+        for (auto &it : ops)
+        {
+            applyDelta(materialized, it.second);
+        }
+        return true;
+    }
+}
 
 ShardKV::ShardKV(std::vector<Host> &ctrlerHosts, Host me)
     : ctrlerHosts_(ctrlerHosts), ctrlerClerk_(ctrlerHosts), me_(std::move(me))
@@ -374,11 +480,46 @@ bool ShardKV::tryPullShardData(const Config &oldCfg, GID fromGid, ShardId sid, s
     return false;
 }
 
+bool ShardKV::tryAckShardTransfer(const Config &oldCfg, GID fromGid, ShardId sid, int32_t configNum)
+{
+    auto srcIt = oldCfg.groupHosts.find(fromGid);
+    if (srcIt == oldCfg.groupHosts.end() || srcIt->second.empty())
+    {
+        return false;
+    }
+
+    PullShardParams p;
+    p.id = sid;
+    p.gid = fromGid;
+    p.configNum = -configNum;
+
+    auto hosts = srcIt->second;
+    ClientManager<ShardKVRaftClient> cm(hosts.size(), KV_PRC_TIMEOUT);
+    for (int i = 0; i < static_cast<int>(hosts.size()); i++)
+    {
+        try
+        {
+            PullShardReply rep;
+            auto *client = cm.getClient(i, hosts[i]);
+            client->pullShardParams(rep, p);
+            if (rep.code == ErrorCode::SUCCEED)
+            {
+                return true;
+            }
+        }
+        catch (apache::thrift::TException &)
+        {
+            cm.setInvalid(i);
+        }
+    }
+    return false;
+}
+
 void ShardKV::refreshOwnership(const Config &oldCfg, const Config &newCfg)
 {
     std::set<GID> newMyGids;
     std::set<ShardId> newOwned;
-    std::vector<std::pair<GID, ShardId>> stopTasks;
+    std::vector<std::pair<GID, ShardId>> pushingTasks;
     std::vector<std::tuple<GID, ShardId, GID>> pullTasks;
 
     for (const auto &it : newCfg.groupHosts)
@@ -397,7 +538,6 @@ void ShardKV::refreshOwnership(const Config &oldCfg, const Config &newCfg)
         std::lock_guard<std::mutex> guard(lock_);
         auto oldOwned = ownedShards_;
         myGids_ = newMyGids;
-        // 更新group配置
         ensureLocalGroups(newCfg);
 
         for (int sid = 0; sid < static_cast<int>(newCfg.shard2gid.size()); sid++)
@@ -409,13 +549,6 @@ void ShardKV::refreshOwnership(const Config &oldCfg, const Config &newCfg)
             }
 
             newOwned.insert(sid);
-            // sid 存在，说明能够服务
-            auto git = groups_.find(gid);
-            if (git != groups_.end())
-            {
-                git->second->ensureShardServing(sid);
-            }
-
             GID fromGid = INVALID_GID;
             if (sid < static_cast<int>(oldCfg.shard2gid.size()))
             {
@@ -423,8 +556,20 @@ void ShardKV::refreshOwnership(const Config &oldCfg, const Config &newCfg)
             }
             if (fromGid != INVALID_GID && fromGid != gid)
             {
-                // 请求拉取任务
                 pullTasks.emplace_back(gid, sid, fromGid);
+                auto git = groups_.find(gid);
+                if (git != groups_.end())
+                {
+                    git->second->ensureShardPulling(sid);
+                }
+            }
+            else
+            {
+                auto git = groups_.find(gid);
+                if (git != groups_.end())
+                {
+                    git->second->ensureShardServing(sid);
+                }
             }
         }
 
@@ -439,7 +584,7 @@ void ShardKV::refreshOwnership(const Config &oldCfg, const Config &newCfg)
                 GID oldGid = oldCfg.shard2gid[sid];
                 if (myGids_.find(oldGid) != myGids_.end())
                 {
-                    stopTasks.emplace_back(oldGid, sid);
+                    pushingTasks.emplace_back(oldGid, sid);
                 }
             }
         }
@@ -447,7 +592,7 @@ void ShardKV::refreshOwnership(const Config &oldCfg, const Config &newCfg)
         ownedShards_ = newOwned;
     }
 
-    for (const auto &task : stopTasks)
+    for (const auto &task : pushingTasks)
     {
         std::shared_ptr<ShardGroup> g;
         {
@@ -459,7 +604,7 @@ void ShardKV::refreshOwnership(const Config &oldCfg, const Config &newCfg)
             }
             g = it->second;
         }
-        g->stopShard(task.second);
+        g->ensureShardPushing(task.second, newCfg.configNum);
     }
 
     for (const auto &task : pullTasks)
@@ -467,12 +612,6 @@ void ShardKV::refreshOwnership(const Config &oldCfg, const Config &newCfg)
         GID toGid = std::get<0>(task);
         ShardId sid = std::get<1>(task);
         GID fromGid = std::get<2>(task);
-
-        std::map<std::string, std::string> data;
-        if (!tryPullShardData(oldCfg, fromGid, sid, data))
-        {
-            continue;
-        }
 
         std::shared_ptr<ShardGroup> g;
         {
@@ -483,9 +622,60 @@ void ShardKV::refreshOwnership(const Config &oldCfg, const Config &newCfg)
                 continue;
             }
             g = it->second;
+            g->ensureShardPulling(sid);
         }
-        // 加载数据到本地
-        g->importShardData(sid, data);
+
+        std::map<std::string, std::string> merged;
+        int64_t prevSeq = -1;
+        int stableRounds = 0;
+        bool hasPulled = false;
+        for (int i = 0; i < 40; i++)
+        {
+            std::map<std::string, std::string> raw;
+            if (!tryPullShardData(oldCfg, fromGid, sid, raw))
+            {
+                std::this_thread::sleep_for(std::chrono::milliseconds(30));
+                continue;
+            }
+
+            int64_t seq = 0;
+            std::map<std::string, std::string> materialized;
+            if (!decodePulledShardData(raw, materialized, seq))
+            {
+                std::this_thread::sleep_for(std::chrono::milliseconds(30));
+                continue;
+            }
+            merged = std::move(materialized);
+            hasPulled = true;
+
+            if (seq == prevSeq)
+            {
+                stableRounds++;
+            }
+            else
+            {
+                stableRounds = 0;
+            }
+            prevSeq = seq;
+
+            if (stableRounds >= 1)
+            {
+                break;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(30));
+        }
+
+        if (!hasPulled)
+        {
+            continue;
+        }
+
+        g->importShardData(sid, merged, false);
+        if (!tryAckShardTransfer(oldCfg, fromGid, sid, newCfg.configNum))
+        {
+            continue;
+        }
+        g->ensureShardServing(sid);
     }
 }
 

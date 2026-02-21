@@ -1,7 +1,16 @@
 #include <future>
 #include <fstream>
+#include <algorithm>
 
 #include <shardkv/ShardGroup.h>
+
+namespace
+{
+    constexpr const char *kMigrateMetaConfig = "__raftredis_migrate_meta__config";
+    constexpr const char *kMigrateMetaEpoch = "__raftredis_migrate_meta__epoch";
+    constexpr const char *kMigrateMetaSeq = "__raftredis_migrate_meta__seq";
+    constexpr const char *kMigrateOpPrefix = "__raftredis_migrate_op__";
+}
 
 ShardGroup::ShardGroup(std::vector<Host> &peers, Host me, std::string persisterDir, GID gid)
     : raft_(std::make_unique<RaftHandler>(peers, me, persisterDir, &shardManger_, gid)), gid_(gid)
@@ -80,6 +89,10 @@ void ShardManger::handlePutAppend(PutAppendReply &_return, const PutAppendParams
 
     auto &shard = shards_[sid];
     _return = shard.kv.putAppend(params);
+    if (_return.code == ErrorCode::SUCCEED && shard.status == ShardStatus::PUSHING)
+    {
+        appendDeltaLocked(shard, KVArgs(params));
+    }
 }
 
 void ShardManger::handleGet(GetReply &_return, const GetParams &params)
@@ -103,6 +116,18 @@ void ShardManger::handleDel(DeleteReply &_return, const DeleteParams &params)
 
     auto &shard = shards_[sid];
     _return = shard.kv.del(params);
+    if (_return.code == ErrorCode::SUCCEED && shard.status == ShardStatus::PUSHING)
+    {
+        appendDeltaLocked(shard, KVArgs(params));
+    }
+}
+
+void ShardManger::appendDeltaLocked(Shard &shard, const KVArgs &args)
+{
+    Shard::DeltaOp op;
+    op.seq = ++shard.transferSeq;
+    op.cmd = KVArgs::serialize(args);
+    shard.transferOps.push_back(std::move(op));
 }
 
 ErrorCode::type ShardManger::checkShard(ShardId sid, ErrorCode::type &code)
@@ -119,8 +144,10 @@ ErrorCode::type ShardManger::checkShard(ShardId sid, ErrorCode::type &code)
     switch (shard.status)
     {
     case ShardStatus::PULLING:
-    case ShardStatus::PUSHING:
         code = ErrorCode::ERR_SHARD_MIGRATING;
+        break;
+    case ShardStatus::PUSHING:
+        code = ErrorCode::SUCCEED;
         break;
     case ShardStatus::STOP:
         code = ErrorCode::ERR_SHARD_STOP;
@@ -206,6 +233,12 @@ void ShardGroup::pullShardParams(PullShardReply &_return, const PullShardParams 
         _return.code = ErrorCode::ERR_NO_SUCH_GROUP;
         return;
     }
+    if (params.configNum < 0)
+    {
+        shardManger_.stopShardByAck(params.id, -params.configNum);
+        _return.code = ErrorCode::SUCCEED;
+        return;
+    }
     if (!exportShardData(params.id, _return.kvs, _return.code))
     {
         return;
@@ -228,6 +261,39 @@ void ShardManger::ensureShardServing(ShardId sid)
     shard.status = ShardStatus::SERVERING;
 }
 
+void ShardManger::ensureShardPulling(ShardId sid)
+{
+    std::lock_guard<std::mutex> guard(lock_);
+    if (shards_.find(sid) == shards_.end())
+    {
+        Shard shard;
+        shard.kv = KVService(sid);
+        shard.status = ShardStatus::PULLING;
+        shards_[sid] = std::move(shard);
+        return;
+    }
+    shards_[sid].status = ShardStatus::PULLING;
+}
+
+void ShardManger::ensureShardPushing(ShardId sid, int32_t configNum)
+{
+    std::lock_guard<std::mutex> guard(lock_);
+    if (shards_.find(sid) == shards_.end())
+    {
+        Shard shard;
+        shard.kv = KVService(sid);
+        shard.status = ShardStatus::PUSHING;
+        shards_[sid] = std::move(shard);
+    }
+    auto &shard = shards_[sid];
+    shard.status = ShardStatus::PUSHING;
+    shard.transferBase = shard.kv.snapshotData();
+    shard.transferOps.clear();
+    shard.transferSeq = 0;
+    shard.transferEpoch += 1;
+    shard.transferConfigNum = configNum;
+}
+
 bool ShardManger::exportShardData(ShardId sid, std::map<std::string, std::string> &data, ErrorCode::type &code)
 {
     std::lock_guard<std::mutex> guard(lock_);
@@ -243,16 +309,34 @@ bool ShardManger::exportShardData(ShardId sid, std::map<std::string, std::string
         return false;
     }
     data.clear();
-    auto um = it->second.kv.snapshotData();
-    for (const auto &kv : um)
+    auto &shard = it->second;
+    if (shard.status == ShardStatus::PUSHING)
     {
-        data[kv.first] = kv.second;
+        for (const auto &kv : shard.transferBase)
+        {
+            data[kv.first] = kv.second;
+        }
+        data[kMigrateMetaConfig] = std::to_string(shard.transferConfigNum);
+        data[kMigrateMetaEpoch] = std::to_string(shard.transferEpoch);
+        data[kMigrateMetaSeq] = std::to_string(shard.transferSeq);
+        for (const auto &op : shard.transferOps)
+        {
+            data[std::string(kMigrateOpPrefix) + std::to_string(op.seq)] = op.cmd;
+        }
+    }
+    else
+    {
+        auto um = shard.kv.snapshotData();
+        for (const auto &kv : um)
+        {
+            data[kv.first] = kv.second;
+        }
     }
     code = ErrorCode::SUCCEED;
     return true;
 }
 
-void ShardManger::importShardData(ShardId sid, const std::map<std::string, std::string> &data)
+void ShardManger::importShardData(ShardId sid, const std::map<std::string, std::string> &data, bool serving)
 {
     std::lock_guard<std::mutex> guard(lock_);
     std::unordered_map<std::string, std::string> um;
@@ -263,7 +347,13 @@ void ShardManger::importShardData(ShardId sid, const std::map<std::string, std::
     auto &shard = shards_[sid];
     shard.kv = KVService(sid);
     shard.kv.loadData(um);
-    shard.status = ShardStatus::SERVERING;
+    shard.status = serving ? ShardStatus::SERVERING : ShardStatus::PULLING;
+    if (serving)
+    {
+        shard.transferBase.clear();
+        shard.transferOps.clear();
+        shard.transferSeq = 0;
+    }
 }
 
 void ShardManger::stopShard(ShardId sid)
@@ -274,7 +364,37 @@ void ShardManger::stopShard(ShardId sid)
     {
         return;
     }
+    std::unordered_map<std::string, std::string> empty;
+    it->second.kv.loadData(empty);
     it->second.status = ShardStatus::STOP;
+    it->second.transferBase.clear();
+    it->second.transferOps.clear();
+    it->second.transferSeq = 0;
+}
+
+void ShardManger::stopShardByAck(ShardId sid, int32_t configNum)
+{
+    std::lock_guard<std::mutex> guard(lock_);
+    auto it = shards_.find(sid);
+    if (it == shards_.end())
+    {
+        return;
+    }
+    auto &shard = it->second;
+    if (shard.status != ShardStatus::PUSHING)
+    {
+        return;
+    }
+    if (shard.transferConfigNum != configNum)
+    {
+        return;
+    }
+    std::unordered_map<std::string, std::string> empty;
+    shard.kv.loadData(empty);
+    shard.status = ShardStatus::STOP;
+    shard.transferBase.clear();
+    shard.transferOps.clear();
+    shard.transferSeq = 0;
 }
 
 void ShardManger::del(DeleteReply &_return, const DeleteParams &params)
@@ -299,14 +419,24 @@ void ShardGroup::ensureShardServing(ShardId sid)
     shardManger_.ensureShardServing(sid);
 }
 
+void ShardGroup::ensureShardPulling(ShardId sid)
+{
+    shardManger_.ensureShardPulling(sid);
+}
+
+void ShardGroup::ensureShardPushing(ShardId sid, int32_t configNum)
+{
+    shardManger_.ensureShardPushing(sid, configNum);
+}
+
 bool ShardGroup::exportShardData(ShardId sid, std::map<std::string, std::string> &data, ErrorCode::type &code)
 {
     return shardManger_.exportShardData(sid, data, code);
 }
 
-void ShardGroup::importShardData(ShardId sid, const std::map<std::string, std::string> &data)
+void ShardGroup::importShardData(ShardId sid, const std::map<std::string, std::string> &data, bool serving)
 {
-    shardManger_.importShardData(sid, data);
+    shardManger_.importShardData(sid, data, serving);
 }
 
 void ShardGroup::stopShard(ShardId sid)

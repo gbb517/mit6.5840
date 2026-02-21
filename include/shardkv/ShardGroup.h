@@ -3,6 +3,7 @@
 
 #include <atomic>
 #include <future>
+#include <cstdint>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -27,8 +28,19 @@ class ShardManger : public virtual StateMachineIf
 private:
     struct Shard
     {
+        struct DeltaOp
+        {
+            int64_t seq = 0;
+            std::string cmd;
+        };
+
         KVService kv;
         ShardStatus::type status;
+        std::unordered_map<std::string, std::string> transferBase;
+        std::vector<DeltaOp> transferOps;
+        int64_t transferSeq = 0;
+        int64_t transferEpoch = 0;
+        int32_t transferConfigNum = 0;
 
         Shard()
             : kv(KVService(-1)), status(ShardStatus::STOP)
@@ -49,12 +61,15 @@ public:
     std::future<ShardReply> getFuture(LogId id);
 
     void ensureShardServing(ShardId sid);
+    void ensureShardPulling(ShardId sid);
+    void ensureShardPushing(ShardId sid, int32_t configNum);
 
     bool exportShardData(ShardId sid, std::map<std::string, std::string> &data, ErrorCode::type &code);
 
-    void importShardData(ShardId sid, const std::map<std::string, std::string> &data);
+    void importShardData(ShardId sid, const std::map<std::string, std::string> &data, bool serving);
 
     void stopShard(ShardId sid);
+    void stopShardByAck(ShardId sid, int32_t configNum);
 
     void del(DeleteReply &_return, const DeleteParams &params);
 
@@ -64,6 +79,7 @@ private:
     void handlePutAppend(PutAppendReply &_return, const PutAppendParams &params);
     void handleGet(GetReply &_return, const GetParams &params);
     void handleDel(DeleteReply &_return, const DeleteParams &params);
+    void appendDeltaLocked(Shard &shard, const KVArgs &args);
     ErrorCode::type checkShard(ShardId sid, ErrorCode::type &code);
 
 private:
@@ -90,10 +106,12 @@ public:
     virtual void pullShardParams(PullShardReply &_return, const PullShardParams &params) override;
 
     void ensureShardServing(ShardId sid);
+    void ensureShardPulling(ShardId sid);
+    void ensureShardPushing(ShardId sid, int32_t configNum);
 
     bool exportShardData(ShardId sid, std::map<std::string, std::string> &data, ErrorCode::type &code);
 
-    void importShardData(ShardId sid, const std::map<std::string, std::string> &data);
+    void importShardData(ShardId sid, const std::map<std::string, std::string> &data, bool serving);
 
     void stopShard(ShardId sid);
 

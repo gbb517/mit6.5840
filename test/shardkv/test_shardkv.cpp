@@ -41,6 +41,15 @@ static Host makeHost(const string &ip, int port)
     return h;
 }
 
+static int keyToShard(const string &key, int shardNum = 10)
+{
+    if (shardNum <= 0 || key.empty())
+    {
+        return 0;
+    }
+    return static_cast<unsigned char>(key[0]) % shardNum;
+}
+
 class ShardCtrlerTest : public testing::Test
 {
 protected:
@@ -1246,87 +1255,197 @@ TEST_F(ShardKVTest, TestUnreliable2_4B)
 TEST_F(ShardKVTest, TestChallenge1Delete)
 {
     initCtrlers(3);
-    initShardKVs(2);
+    initShardKVs(3);
 
     ShardctrlerClerk mck(ctrlHosts_);
     ShardKVClerk ck(ctrlHosts_);
     joinGroup(mck, 100, {kvHosts_[0]});
 
-    for (int i = 0; i < 40; i++)
+    const int n = 30;
+    vector<string> keys(n);
+    vector<string> vals(n);
+    for (int i = 0; i < n; i++)
     {
-        ASSERT_TRUE(putRetry(ck, fmt::format("ch1-{}", i), string(200, 'p'), PutOp::PUT));
+        keys[i] = std::to_string(i);
+        vals[i] = string(1000, static_cast<char>('a' + (i % 26)));
+        ASSERT_TRUE(putRetry(ck, keys[i], vals[i], PutOp::PUT));
     }
 
-    stopKV(1);
-    joinGroup(mck, 101, {kvHosts_[1]});
-    leaveGroup(mck, 101);
-    startKV(1);
-
-    for (int i = 0; i < 10; i++)
+    for (int i = 0; i < 3; i++)
     {
         GetReply gr;
-        ASSERT_TRUE(getRetry(ck, fmt::format("ch1-{}", i), gr));
+        ASSERT_TRUE(getRetry(ck, keys[i], gr));
         ASSERT_EQ(gr.code, ErrorCode::SUCCEED);
-        EXPECT_EQ(static_cast<int>(gr.value.size()), 200);
+        ASSERT_EQ(gr.value, vals[i]);
+    }
+
+    for (int iter = 0; iter < 2; iter++)
+    {
+        joinGroup(mck, 101, {kvHosts_[1]});
+        leaveGroup(mck, 100);
+        joinGroup(mck, 102, {kvHosts_[2]});
+        std::this_thread::sleep_for(std::chrono::seconds(2));
+
+        for (int i = 0; i < 3; i++)
+        {
+            GetReply gr;
+            ASSERT_TRUE(getRetry(ck, keys[i], gr));
+            ASSERT_EQ(gr.code, ErrorCode::SUCCEED);
+            ASSERT_EQ(gr.value, vals[i]);
+        }
+
+        leaveGroup(mck, 101);
+        joinGroup(mck, 100, {kvHosts_[0]});
+        leaveGroup(mck, 102);
+        std::this_thread::sleep_for(std::chrono::seconds(2));
+
+        for (int i = 0; i < 3; i++)
+        {
+            GetReply gr;
+            ASSERT_TRUE(getRetry(ck, keys[i], gr));
+            ASSERT_EQ(gr.code, ErrorCode::SUCCEED);
+            ASSERT_EQ(gr.value, vals[i]);
+        }
+    }
+
+    joinGroup(mck, 101, {kvHosts_[1]});
+    joinGroup(mck, 102, {kvHosts_[2]});
+    std::this_thread::sleep_for(std::chrono::seconds(1));
+    for (int r = 0; r < 3; r++)
+    {
+        for (int i = 0; i < 3; i++)
+        {
+            GetReply gr;
+            ASSERT_TRUE(getRetry(ck, keys[i], gr));
+            ASSERT_EQ(gr.code, ErrorCode::SUCCEED);
+            ASSERT_EQ(gr.value, vals[i]);
+        }
+        std::this_thread::sleep_for(std::chrono::seconds(1));
+    }
+
+    for (int i = 0; i < n; i++)
+    {
+        GetReply gr;
+        ASSERT_TRUE(getRetry(ck, keys[i], gr));
+        ASSERT_EQ(gr.code, ErrorCode::SUCCEED);
+        ASSERT_EQ(gr.value, vals[i]);
     }
 }
 
 TEST_F(ShardKVTest, TestChallenge2Unaffected)
 {
     initCtrlers(3);
-    initShardKVs(2);
+    initShardKVs(3);
 
     ShardctrlerClerk mck(ctrlHosts_);
     ShardKVClerk ck(ctrlHosts_);
     joinGroup(mck, 100, {kvHosts_[0]});
 
-    for (int i = 0; i < 12; i++)
+    const int n = 10;
+    vector<string> keys(n);
+    vector<string> vals(n, "100");
+    for (int i = 0; i < n; i++)
     {
-        ASSERT_TRUE(putRetry(ck, fmt::format("ch2u-{}", i), "0", PutOp::PUT));
+        keys[i] = std::to_string(i);
+        ASSERT_TRUE(putRetry(ck, keys[i], vals[i], PutOp::PUT));
     }
 
-    stopKV(1);
     joinGroup(mck, 101, {kvHosts_[1]});
-
-    for (int i = 0; i < 12; i++)
+    auto cfg = latestConfig(mck);
+    std::unordered_map<int, bool> owned;
+    for (int sid = 0; sid < static_cast<int>(cfg.shard2gid.size()); sid++)
     {
-        ASSERT_TRUE(putRetry(ck, fmt::format("ch2u-{}", i), "1", PutOp::APPEND));
-        GetReply gr;
-        ASSERT_TRUE(getRetry(ck, fmt::format("ch2u-{}", i), gr));
-        ASSERT_EQ(gr.code, ErrorCode::SUCCEED);
+        owned[sid] = (cfg.shard2gid[sid] == 101);
     }
 
-    leaveGroup(mck, 101);
-    startKV(1);
+    std::this_thread::sleep_for(std::chrono::seconds(1));
+    for (int i = 0; i < n; i++)
+    {
+        int sid = keyToShard(keys[i], static_cast<int>(cfg.shard2gid.size()));
+        if (owned[sid])
+        {
+            vals[i] = "101";
+            ASSERT_TRUE(putRetry(ck, keys[i], vals[i], PutOp::PUT));
+        }
+    }
+
+    stopKV(0);
+    leaveGroup(mck, 100);
+    std::this_thread::sleep_for(std::chrono::seconds(1));
+
+    for (int i = 0; i < n; i++)
+    {
+        int sid = keyToShard(keys[i], static_cast<int>(cfg.shard2gid.size()));
+        if (!owned[sid])
+        {
+            continue;
+        }
+
+        GetReply gr;
+        ASSERT_TRUE(getRetry(ck, keys[i], gr));
+        ASSERT_EQ(gr.code, ErrorCode::SUCCEED);
+        ASSERT_EQ(gr.value, vals[i]);
+
+        ASSERT_TRUE(putRetry(ck, keys[i], "-1", PutOp::APPEND));
+        ASSERT_TRUE(getRetry(ck, keys[i], gr));
+        ASSERT_EQ(gr.code, ErrorCode::SUCCEED);
+        ASSERT_EQ(gr.value, vals[i] + "-1");
+    }
 }
 
 TEST_F(ShardKVTest, TestChallenge2Partial)
 {
     initCtrlers(3);
-    initShardKVs(2);
+    initShardKVs(3);
 
     ShardctrlerClerk mck(ctrlHosts_);
     ShardKVClerk ck(ctrlHosts_);
     joinGroup(mck, 100, {kvHosts_[0]});
     joinGroup(mck, 101, {kvHosts_[1]});
+    joinGroup(mck, 102, {kvHosts_[2]});
 
-    for (int i = 0; i < 15; i++)
+    std::this_thread::sleep_for(std::chrono::seconds(1));
+
+    const int n = 10;
+    vector<string> keys(n);
+    vector<string> vals(n, "100");
+    for (int i = 0; i < n; i++)
     {
-        ASSERT_TRUE(putRetry(ck, fmt::format("ch2p-{}", i), "a", PutOp::PUT));
+        keys[i] = std::to_string(i);
+        ASSERT_TRUE(putRetry(ck, keys[i], vals[i], PutOp::PUT));
     }
 
-    stopKV(1);
-    leaveGroup(mck, 101);
-
-    for (int i = 0; i < 15; i++)
+    auto cfg = latestConfig(mck);
+    std::unordered_map<int, bool> ownedBy102;
+    for (int sid = 0; sid < static_cast<int>(cfg.shard2gid.size()); sid++)
     {
-        ASSERT_TRUE(putRetry(ck, fmt::format("ch2p-{}", i), "b", PutOp::APPEND));
+        ownedBy102[sid] = (cfg.shard2gid[sid] == 102);
+    }
+
+    stopKV(0);
+    leaveGroup(mck, 100);
+    leaveGroup(mck, 102);
+
+    std::this_thread::sleep_for(std::chrono::seconds(1));
+
+    for (int i = 0; i < n; i++)
+    {
+        int sid = keyToShard(keys[i], static_cast<int>(cfg.shard2gid.size()));
+        if (!ownedBy102[sid])
+        {
+            continue;
+        }
+
         GetReply gr;
-        ASSERT_TRUE(getRetry(ck, fmt::format("ch2p-{}", i), gr));
+        ASSERT_TRUE(getRetry(ck, keys[i], gr));
         ASSERT_EQ(gr.code, ErrorCode::SUCCEED);
-    }
+        ASSERT_EQ(gr.value, vals[i]);
 
-    startKV(1);
+        ASSERT_TRUE(putRetry(ck, keys[i], "-2", PutOp::APPEND));
+        ASSERT_TRUE(getRetry(ck, keys[i], gr));
+        ASSERT_EQ(gr.code, ErrorCode::SUCCEED);
+        ASSERT_EQ(gr.value, vals[i] + "-2");
+    }
 }
 
 TEST_F(ShardKVTest, TestDel4B)
