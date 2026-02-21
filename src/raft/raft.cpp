@@ -457,10 +457,24 @@ void RaftHandler::updateCommitIndex(LogId newIndex)
 
 LogEntry &RaftHandler::getLogByLogIndex(LogId logIndex)
 {
-    uint i = logIndex - (logs_.empty() ? snapshotIndex_ : logs_.front().index);
-    LOG_IF(FATAL, i < 0 || i > logs_.size()) << fmt::format("Unexpected log index {}, cur logs: {}", logIndex, logsRange(logs_));
-    auto &entry = logs_[i];
-    LOG_IF(FATAL, logIndex != entry.index) << "Unexpected log entry: " << entry << " in index: " << logIndex;
+    LogId baseIndex = logs_.empty() ? (snapshotIndex_ + 1) : logs_.front().index;
+    int64_t i64 = static_cast<int64_t>(logIndex) - static_cast<int64_t>(baseIndex);
+    if (i64 < 0 || i64 >= static_cast<int64_t>(logs_.size()))
+    {
+        LOG(ERROR) << fmt::format("Unexpected log index {}, cur logs: {}, snapshotIndex: {}",
+                                  logIndex, logsRange(logs_), snapshotIndex_);
+        static thread_local LogEntry fallback;
+        fallback.index = logIndex;
+        fallback.term = snapshotTerm_;
+        fallback.command.clear();
+        return fallback;
+    }
+
+    auto &entry = logs_[static_cast<size_t>(i64)];
+    if (logIndex != entry.index)
+    {
+        LOG(ERROR) << "Unexpected log entry: " << entry << " in index: " << logIndex;
+    }
     return entry;
 }
 
@@ -506,8 +520,9 @@ void RaftHandler::handleReplicateResultFor(int peerIndex, LogId prevLogIndex, Lo
         matchI.push_back(lastLogIndex()); // 加入leader自身的index
         sort(matchI.begin(), matchI.end());
         LogId agreeIndex = matchI[matchI.size() / 2];
+        TermId agreeTerm = (agreeIndex == snapshotIndex_) ? snapshotTerm_ : getLogByLogIndex(agreeIndex).term;
         // 1. 更新的commiteIndex 2. 只能确定提交当前任期内的日志
-        if (agreeIndex != commitIndex_ && getLogByLogIndex(agreeIndex).term == currentTerm_)
+        if (agreeIndex != commitIndex_ && agreeTerm == currentTerm_)
         {
             // 通知提交日志
             updateCommitIndex(agreeIndex);
@@ -1026,6 +1041,8 @@ void RaftHandler::async_startSnapShot() noexcept
                 persister_.commitSnapshot(tmpSnapshotFile, lastIncludeTerm, lastIncludeIndex);
                 snapshotIndex_ = lastIncludeIndex;
                 snapshotTerm_ = lastIncludeTerm;
+                commitIndex_ = std::max(commitIndex_, snapshotIndex_);
+                lastApplied_ = std::max(lastApplied_, snapshotIndex_);
                 compactLogs();
             }
             inSnapshot_ = false;

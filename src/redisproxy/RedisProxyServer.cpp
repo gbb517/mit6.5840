@@ -4,7 +4,9 @@
 #include <cctype>
 #include <cerrno>
 #include <cstring>
+#include <functional>
 #include <limits>
+#include <sstream>
 #include <set>
 #include <thread>
 #include <unordered_set>
@@ -17,6 +19,8 @@
 #include <unistd.h>
 
 #include <glog/logging.h>
+#include <boost/any.hpp>
+#include <muduo/net/InetAddress.h>
 #include <shardkv/ShardCtrler.h>
 
 namespace
@@ -67,6 +71,189 @@ namespace
         r.array = arr;
         return r;
     }
+
+    enum class ParseStatus
+    {
+        Ok,
+        Incomplete,
+        Error,
+    };
+
+    bool parseInt64Strict(const std::string &s, int64_t &out)
+    {
+        try
+        {
+            size_t idx = 0;
+            long long val = std::stoll(s, &idx, 10);
+            if (idx != s.size())
+                return false;
+            out = static_cast<int64_t>(val);
+            return true;
+        }
+        catch (...)
+        {
+            return false;
+        }
+    }
+
+    ParseStatus parseRespAt(const std::string &buf, size_t pos, RedisProxyServer::RespValue &out, size_t &used)
+    {
+        if (pos >= buf.size())
+            return ParseStatus::Incomplete;
+
+        auto findEol = [&](size_t from, size_t &lineEnd, size_t &termLen) -> bool
+        {
+            size_t lf = buf.find('\n', from);
+            if (lf == std::string::npos)
+                return false;
+            if (lf > from && buf[lf - 1] == '\r')
+            {
+                lineEnd = lf - 1;
+                termLen = 2;
+            }
+            else
+            {
+                lineEnd = lf;
+                termLen = 1;
+            }
+            return true;
+        };
+
+        char prefix = buf[pos];
+        if (prefix != '*' && prefix != '$' && prefix != '+' && prefix != ':' && prefix != '-')
+        {
+            size_t lineEnd = 0;
+            size_t termLen = 0;
+            if (!findEol(pos, lineEnd, termLen))
+                return ParseStatus::Incomplete;
+
+            std::string line = buf.substr(pos, lineEnd - pos);
+            std::istringstream iss(line);
+            std::string token;
+            std::vector<RedisProxyServer::RespValue> args;
+            while (iss >> token)
+            {
+                args.push_back(makeBulk(token));
+            }
+            if (args.empty())
+                return ParseStatus::Error;
+
+            out = makeArray(args);
+            used = (lineEnd - pos) + termLen;
+            return ParseStatus::Ok;
+        }
+
+        switch (prefix)
+        {
+        case '*':
+        {
+            size_t lineEnd = 0;
+            size_t termLen = 0;
+            if (!findEol(pos + 1, lineEnd, termLen))
+                return ParseStatus::Incomplete;
+
+            int64_t count = 0;
+            if (!parseInt64Strict(buf.substr(pos + 1, lineEnd - (pos + 1)), count) || count < 0)
+                return ParseStatus::Error;
+
+            size_t cur = lineEnd + termLen;
+            out.type = RedisProxyServer::RespValue::Type::ARRAY;
+            out.array.clear();
+            out.array.reserve(static_cast<size_t>(count));
+            for (int64_t i = 0; i < count; i++)
+            {
+                RedisProxyServer::RespValue elem;
+                size_t elemUsed = 0;
+                auto st = parseRespAt(buf, cur, elem, elemUsed);
+                if (st != ParseStatus::Ok)
+                    return st;
+                out.array.push_back(std::move(elem));
+                cur += elemUsed;
+            }
+
+            used = cur - pos;
+            return ParseStatus::Ok;
+        }
+        case '$':
+        {
+            size_t lineEnd = 0;
+            size_t termLen = 0;
+            if (!findEol(pos + 1, lineEnd, termLen))
+                return ParseStatus::Incomplete;
+
+            int64_t len = 0;
+            if (!parseInt64Strict(buf.substr(pos + 1, lineEnd - (pos + 1)), len))
+                return ParseStatus::Error;
+
+            size_t cur = lineEnd + termLen;
+            if (len < 0)
+            {
+                out.type = RedisProxyServer::RespValue::Type::NIL;
+                out.str.clear();
+                used = cur - pos;
+                return ParseStatus::Ok;
+            }
+
+            size_t need = static_cast<size_t>(len);
+            if (cur + need >= buf.size())
+                return ParseStatus::Incomplete;
+
+            if (buf[cur + need] != '\r')
+            {
+                if (buf[cur + need] != '\n')
+                    return ParseStatus::Error;
+                out.type = RedisProxyServer::RespValue::Type::BULK_STRING;
+                out.str = buf.substr(cur, need);
+                used = (cur + need + 1) - pos;
+                return ParseStatus::Ok;
+            }
+
+            if (cur + need + 1 >= buf.size())
+                return ParseStatus::Incomplete;
+            if (buf[cur + need + 1] != '\n')
+                return ParseStatus::Error;
+
+            out.type = RedisProxyServer::RespValue::Type::BULK_STRING;
+            out.str = buf.substr(cur, need);
+            used = (cur + need + 2) - pos;
+            return ParseStatus::Ok;
+        }
+        case '+':
+        case '-':
+        case ':':
+        {
+            size_t lineEnd = 0;
+            size_t termLen = 0;
+            if (!findEol(pos + 1, lineEnd, termLen))
+                return ParseStatus::Incomplete;
+
+            std::string payload = buf.substr(pos + 1, lineEnd - (pos + 1));
+            if (prefix == '+')
+            {
+                out.type = RedisProxyServer::RespValue::Type::SIMPLE_STRING;
+                out.str = std::move(payload);
+            }
+            else if (prefix == '-')
+            {
+                out.type = RedisProxyServer::RespValue::Type::ERROR;
+                out.str = std::move(payload);
+            }
+            else
+            {
+                int64_t x = 0;
+                if (!parseInt64Strict(payload, x))
+                    return ParseStatus::Error;
+                out.type = RedisProxyServer::RespValue::Type::INTEGER;
+                out.integer = x;
+            }
+
+            used = (lineEnd + termLen) - pos;
+            return ParseStatus::Ok;
+        }
+        default:
+            return ParseStatus::Error;
+        }
+    }
 } // namespace
 
 RedisProxyServer::RedisProxyServer(std::vector<Host> ctrlerHosts, int port)
@@ -81,181 +268,80 @@ RedisProxyServer::~RedisProxyServer()
 
 void RedisProxyServer::run()
 {
-    serverFd_ = socket(AF_INET, SOCK_STREAM, 0);
-    if (serverFd_ < 0)
-    {
-        LOG(FATAL) << "socket failed: " << strerror(errno);
-    }
+    stopped_ = false;
+    loop_.reset(new muduo::net::EventLoop());
 
-    int opt = 1;
-    setsockopt(serverFd_, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+    muduo::net::InetAddress listenAddr(static_cast<uint16_t>(port_));
+    server_.reset(new muduo::net::TcpServer(loop_.get(), listenAddr, "RedisProxyServer"));
+    server_->setConnectionCallback(std::bind(&RedisProxyServer::onConnection, this, std::placeholders::_1));
+    server_->setMessageCallback(std::bind(&RedisProxyServer::onMessage, this, std::placeholders::_1,
+                                          std::placeholders::_2, std::placeholders::_3));
 
-    sockaddr_in addr{};
-    addr.sin_family = AF_INET;
-    addr.sin_port = htons(port_);
-    addr.sin_addr.s_addr = INADDR_ANY;
+    int nThreads = static_cast<int>(std::thread::hardware_concurrency());
+    if (nThreads <= 0)
+        nThreads = 4;
+    server_->setThreadNum(nThreads);
+    server_->start();
 
-    if (bind(serverFd_, reinterpret_cast<sockaddr *>(&addr), sizeof(addr)) < 0)
-    {
-        LOG(FATAL) << "bind failed: " << strerror(errno);
-    }
-    if (listen(serverFd_, 128) < 0)
-    {
-        LOG(FATAL) << "listen failed: " << strerror(errno);
-    }
-
-    LOG(INFO) << "RedisProxyServer listening on port " << port_;
-    while (!stopped_.load())
-    {
-        int clientFd = accept(serverFd_, nullptr, nullptr);
-        if (clientFd < 0)
-        {
-            if (stopped_.load())
-            {
-                break;
-            }
-            continue;
-        }
-
-        std::thread worker([this, clientFd]()
-                           { handleClient(clientFd); });
-        worker.detach();
-    }
+    LOG(INFO) << "RedisProxyServer(muduo) listening on port " << port_ << ", threads=" << nThreads;
+    loop_->loop();
 }
 
 void RedisProxyServer::stop()
 {
     stopped_ = true;
-    if (serverFd_ >= 0)
+    if (loop_)
     {
-        close(serverFd_);
-        serverFd_ = -1;
+        loop_->quit();
     }
 }
 
-void RedisProxyServer::handleClient(int clientFd)
+void RedisProxyServer::onConnection(const muduo::net::TcpConnectionPtr &conn)
 {
-    while (!stopped_.load())
+    if (conn->connected())
+    {
+        conn->setContext(std::string());
+    }
+}
+
+void RedisProxyServer::onMessage(const muduo::net::TcpConnectionPtr &conn, muduo::net::Buffer *buf, muduo::Timestamp)
+{
+    auto *ctx = boost::any_cast<std::string>(conn->getMutableContext());
+    if (ctx == nullptr)
+    {
+        conn->setContext(std::string());
+        ctx = boost::any_cast<std::string>(conn->getMutableContext());
+    }
+    if (ctx == nullptr)
+        return;
+
+    ctx->append(buf->retrieveAllAsString());
+
+    while (!ctx->empty() && !stopped_.load())
     {
         RespValue req;
-        if (!readRespValue(clientFd, req))
+        size_t used = 0;
+        ParseStatus st = parseRespAt(*ctx, 0, req, used);
+        if (st == ParseStatus::Incomplete)
         {
             break;
         }
+        if (st == ParseStatus::Error)
+        {
+            conn->send(encodeResp(makeErr("ERR Protocol error")));
+            conn->shutdown();
+            return;
+        }
+
+        if (used == 0 || used > ctx->size())
+        {
+            conn->shutdown();
+            return;
+        }
+
+        ctx->erase(0, used);
         auto resp = execute(req);
-        auto out = encodeResp(resp);
-        if (send(clientFd, out.data(), out.size(), 0) < 0)
-        {
-            break;
-        }
-    }
-    close(clientFd);
-}
-
-bool RedisProxyServer::readLine(int fd, std::string &line)
-{
-    line.clear();
-    char ch;
-    while (true)
-    {
-        ssize_t n = recv(fd, &ch, 1, 0);
-        if (n <= 0)
-        {
-            return false;
-        }
-        if (ch == '\r')
-        {
-            ssize_t m = recv(fd, &ch, 1, 0);
-            if (m <= 0 || ch != '\n')
-            {
-                return false;
-            }
-            return true;
-        }
-        line.push_back(ch);
-    }
-}
-
-bool RedisProxyServer::readNBytes(int fd, int n, std::string &out)
-{
-    out.clear();
-    out.resize(n);
-    int got = 0;
-    while (got < n)
-    {
-        ssize_t m = recv(fd, &out[got], n - got, 0);
-        if (m <= 0)
-        {
-            return false;
-        }
-        got += static_cast<int>(m);
-    }
-    return true;
-}
-
-bool RedisProxyServer::readRespValue(int fd, RespValue &out)
-{
-    char prefix;
-    ssize_t n = recv(fd, &prefix, 1, 0);
-    if (n <= 0)
-    {
-        return false;
-    }
-
-    std::string line;
-    switch (prefix)
-    {
-    case '*':
-    {
-        if (!readLine(fd, line))
-            return false;
-        int count = std::stoi(line);
-        out.type = RespValue::Type::ARRAY;
-        out.array.clear();
-        for (int i = 0; i < count; i++)
-        {
-            RespValue elem;
-            if (!readRespValue(fd, elem))
-                return false;
-            out.array.push_back(std::move(elem));
-        }
-        return true;
-    }
-    case '$':
-    {
-        if (!readLine(fd, line))
-            return false;
-        int len = std::stoi(line);
-        if (len < 0)
-        {
-            out.type = RespValue::Type::NIL;
-            out.str.clear();
-            return true;
-        }
-        std::string data;
-        if (!readNBytes(fd, len, data))
-            return false;
-        char crlf[2];
-        if (recv(fd, crlf, 2, 0) != 2 || crlf[0] != '\r' || crlf[1] != '\n')
-            return false;
-        out.type = RespValue::Type::BULK_STRING;
-        out.str = std::move(data);
-        return true;
-    }
-    case '+':
-        if (!readLine(fd, line))
-            return false;
-        out.type = RespValue::Type::SIMPLE_STRING;
-        out.str = std::move(line);
-        return true;
-    case ':':
-        if (!readLine(fd, line))
-            return false;
-        out.type = RespValue::Type::INTEGER;
-        out.integer = std::stoll(line);
-        return true;
-    default:
-        return false;
+        conn->send(encodeResp(resp));
     }
 }
 
@@ -378,7 +464,7 @@ RedisProxyServer::RespValue RedisProxyServer::cmdSet(const std::vector<std::stri
     }
 
     if (!kvSet(strKey(argv[1]), argv[2]))
-        return makeErr("ERR set failed");
+        return makeErr("ERR backend unavailable");
 
     return makeSimple("OK");
 }
@@ -1367,58 +1453,81 @@ std::string RedisProxyServer::upper(std::string s) const
 
 bool RedisProxyServer::kvSet(const std::string &key, const std::string &value)
 {
-    if (backendUnavailableFast())
-        return false;
-
     PutAppendParams pp;
     pp.key = key;
     pp.value = value;
     pp.op = PutOp::PUT;
-    PutAppendReply rep;
-    clerk_.putAppend(rep, pp);
-    if (rep.code != ErrorCode::SUCCEED)
+    thread_local std::unique_ptr<ShardKVClerk> clerk;
+    if (!clerk)
+        clerk.reset(new ShardKVClerk(ctrlerHosts_));
+
+    for (int attempt = 0; attempt < 20; attempt++)
     {
-        markBackendDownFor(std::chrono::milliseconds(200));
+        PutAppendReply rep;
+        clerk->putAppend(rep, pp);
+        if (rep.code == ErrorCode::SUCCEED)
+            return true;
+
+        int sleepMs = 5 + attempt * 5;
+        if (sleepMs > 100)
+            sleepMs = 100;
+        std::this_thread::sleep_for(std::chrono::milliseconds(sleepMs));
     }
-    return rep.code == ErrorCode::SUCCEED;
+    return false;
 }
 
 bool RedisProxyServer::kvGet(const std::string &key, std::string &value, bool &exists)
 {
-    if (backendUnavailableFast())
-        return false;
-
     GetParams gp;
     gp.key = key;
-    GetReply rep;
-    clerk_.get(rep, gp);
-    if (rep.code == ErrorCode::SUCCEED)
+    thread_local std::unique_ptr<ShardKVClerk> clerk;
+    if (!clerk)
+        clerk.reset(new ShardKVClerk(ctrlerHosts_));
+
+    for (int attempt = 0; attempt < 20; attempt++)
     {
-        value = rep.value;
-        exists = true;
-        return true;
+        GetReply rep;
+        clerk->get(rep, gp);
+        if (rep.code == ErrorCode::SUCCEED)
+        {
+            value = rep.value;
+            exists = true;
+            return true;
+        }
+        if (rep.code == ErrorCode::ERR_NO_KEY)
+        {
+            exists = false;
+            return true;
+        }
+
+        int sleepMs = 5 + attempt * 5;
+        if (sleepMs > 100)
+            sleepMs = 100;
+        std::this_thread::sleep_for(std::chrono::milliseconds(sleepMs));
     }
-    if (rep.code == ErrorCode::ERR_NO_KEY)
-    {
-        exists = false;
-        return true;
-    }
-    markBackendDownFor(std::chrono::milliseconds(200));
     return false;
 }
 
 int RedisProxyServer::kvDel(const std::string &key)
 {
-    if (backendUnavailableFast())
-        return 0;
-
     DeleteParams dp;
     dp.key = key;
-    DeleteReply dr;
-    clerk_.del(dr, dp);
-    if (dr.code == ErrorCode::SUCCEED)
-        return dr.deleted;
-    markBackendDownFor(std::chrono::milliseconds(200));
+    thread_local std::unique_ptr<ShardKVClerk> clerk;
+    if (!clerk)
+        clerk.reset(new ShardKVClerk(ctrlerHosts_));
+
+    for (int attempt = 0; attempt < 20; attempt++)
+    {
+        DeleteReply dr;
+        clerk->del(dr, dp);
+        if (dr.code == ErrorCode::SUCCEED)
+            return dr.deleted;
+
+        int sleepMs = 5 + attempt * 5;
+        if (sleepMs > 100)
+            sleepMs = 100;
+        std::this_thread::sleep_for(std::chrono::milliseconds(sleepMs));
+    }
     return 0;
 }
 
@@ -1426,29 +1535,36 @@ bool RedisProxyServer::kvPrefixScan(const std::string &prefix, std::string curso
                                     std::vector<std::pair<std::string, std::string>> &items,
                                     std::string &nextCursor, bool &done)
 {
-    if (backendUnavailableFast())
-        return false;
-
     PrefixScanParams sp;
     sp.prefix = prefix;
     sp.cursor = std::move(cursor);
     sp.count = count;
 
-    PrefixScanReply sr;
-    clerk_.prefixScan(sr, sp);
-    if (sr.code != ErrorCode::SUCCEED)
+    thread_local std::unique_ptr<ShardKVClerk> clerk;
+    if (!clerk)
+        clerk.reset(new ShardKVClerk(ctrlerHosts_));
+
+    for (int attempt = 0; attempt < 20; attempt++)
     {
-        markBackendDownFor(std::chrono::milliseconds(200));
-        return false;
+        PrefixScanReply sr;
+        clerk->prefixScan(sr, sp);
+        if (sr.code == ErrorCode::SUCCEED)
+        {
+            items.clear();
+            for (const auto &kv : sr.kvs)
+                items.emplace_back(kv.first, kv.second);
+
+            nextCursor = sr.nextCursor;
+            done = sr.done;
+            return true;
+        }
+
+        int sleepMs = 5 + attempt * 5;
+        if (sleepMs > 100)
+            sleepMs = 100;
+        std::this_thread::sleep_for(std::chrono::milliseconds(sleepMs));
     }
-
-    items.clear();
-    for (const auto &kv : sr.kvs)
-        items.emplace_back(kv.first, kv.second);
-
-    nextCursor = sr.nextCursor;
-    done = sr.done;
-    return true;
+    return false;
 }
 
 int64_t RedisProxyServer::nowMs() const

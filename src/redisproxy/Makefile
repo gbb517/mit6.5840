@@ -1,7 +1,7 @@
 -include ../../Global.mk
 
 ROOTDIR = ../..
-LIBS    := $(LIBS) -lshardkvraft -lraft -lkvraft -lkvraft-rpc
+LIBS    := $(LIBS) -lshardkvraft -lraft -lkvraft -lkvraft-rpc -lmuduo_net -lmuduo_base
 
 REDISPROXY_SRC = RedisProxyServer.cpp
 REDISPROXY_OBJ = $(addprefix $(OBJECTS_DIR)/, $(REDISPROXY_SRC:cpp=o))

@@ -4,8 +4,15 @@
 #include <atomic>
 #include <chrono>
 #include <map>
+#include <memory>
+#include <mutex>
 #include <string>
 #include <vector>
+
+#include <muduo/net/Buffer.h>
+#include <muduo/net/Callbacks.h>
+#include <muduo/net/EventLoop.h>
+#include <muduo/net/TcpServer.h>
 
 #include <rpc/kvraft/KVRaft_types.h>
 #include <shardkv/ShardKVClerk.h>
@@ -38,10 +45,8 @@ public:
     };
 
 private:
-    void handleClient(int clientFd);
-    bool readRespValue(int fd, RespValue &out);
-    bool readLine(int fd, std::string &line);
-    bool readNBytes(int fd, int n, std::string &out);
+    void onConnection(const muduo::net::TcpConnectionPtr &conn);
+    void onMessage(const muduo::net::TcpConnectionPtr &conn, muduo::net::Buffer *buf, muduo::Timestamp);
 
     RespValue execute(const RespValue &request);
     RespValue executeCommand(const std::vector<std::string> &argv);
@@ -124,10 +129,12 @@ private:
 private:
     std::vector<Host> ctrlerHosts_;
     ShardKVClerk clerk_;
+    std::mutex clerkMu_;
     int port_;
-    int serverFd_ = -1;
     std::atomic<bool> stopped_{false};
     std::atomic<int64_t> backendDownUntilMs_{0};
+    std::unique_ptr<muduo::net::EventLoop> loop_;
+    std::unique_ptr<muduo::net::TcpServer> server_;
 };
 
 #endif

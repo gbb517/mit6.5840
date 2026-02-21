@@ -51,4 +51,18 @@ stop_one() {
 stop_one "redisproxy" "$REDISPROXY_PID_FILE"
 stop_one "shardkv_backend" "$BACKEND_PID_FILE"
 
+# Best-effort cleanup for stray processes not tracked by pid files
+for name in redisproxy shardkv_backend; do
+    pids="$(pgrep -f "$ROOT_DIR/bin/$name" || true)"
+    if [[ -n "$pids" ]]; then
+        echo "[stop] cleaning stray $name pids: $pids"
+        kill $pids >/dev/null 2>&1 || true
+        sleep 0.2
+        pids="$(pgrep -f "$ROOT_DIR/bin/$name" || true)"
+        if [[ -n "$pids" ]]; then
+            kill -9 $pids >/dev/null 2>&1 || true
+        fi
+    fi
+done
+
 echo "[stop] done"
