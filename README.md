@@ -1,4 +1,4 @@
-# 分布式系统（MIT6.824） C++实现
+# 分布式系统（MIT6.5840） C++实现
 
 ## 项目依赖
 
@@ -76,26 +76,6 @@ HGET h1 f1
 REDIS_PORT=6390 CTRL_HOSTS=127.0.0.1:8101,127.0.0.1:8102,127.0.0.1:8103 ./scripts/start_raft-redis.sh
 ```
 
-### 常见故障排查
-
-1. **`Address already in use` / 端口被占用**
-	- 先执行：`./scripts/stop_raft-redis.sh`
-	- 再重启：`./scripts/start_raft-redis.sh`
-
-2. **`redis-cli` 无法连接（Connection refused）**
-	- 确认启动脚本执行成功并输出了 `done`
-	- 检查 `redisproxy` 是否监听：`ss -ltnp | grep 6381`
-
-3. **`ERR backend unavailable`**
-	- 表示后端集群未就绪或已退出
-	- 查看日志：
-	  - `logs/raft-redis/out/shardkv_backend.out`
-	  - `logs/raft-redis/out/redisproxy.out`
-
-4. **日志目录错误或权限问题**
-	- 确认项目目录可写
-	- 必要时手动创建：`mkdir -p logs/backend logs/redisproxy logs/raft-redis`
-
 
 ## 系统测试
 
@@ -121,5 +101,3 @@ make run-test
 make run_test cmd_args="--gtest_list_tests"
 make run_test cmd_args="--gtest_filter=*testCaseName"
 ```
-
-分布式系统无法直接使用gdb来debug，只能通过分析运行日志来找出错误的原因。因此在tools文件夹下，提供了一个`analyze_log.py`脚本，该脚本从`logs`文件夹下读取每个进程对应的日志，按时间排序将日志一种比较友好的方式输出到tsv文件中，用execl打开，调好列宽和自动换行就能很清晰的分析日志了。
