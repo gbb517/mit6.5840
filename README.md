@@ -47,7 +47,7 @@ make kvraft
 make shardkv
 ```
 
-## Raft+Redis 一键起停（推荐）
+## Raft+Redis 测试
 
 连接 `redis-cli` ，可以使用脚本一次启动后端（3个 ShardCtrler + 2个 ShardKV）以及 Redis 协议代理。
 
